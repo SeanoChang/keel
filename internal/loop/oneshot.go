@@ -15,6 +15,7 @@ func RunOneShot(ctx context.Context, name, dir, message string) (string, error) 
 	cmd := exec.CommandContext(ctx, "claude",
 		"--agent", name,
 		"--permission-mode", "dontAsk",
+		"--verbose",
 		"-p", message,
 	)
 	cmd.Dir = dir
@@ -30,11 +31,14 @@ func RunOneShot(ctx context.Context, name, dir, message string) (string, error) 
 	return strings.TrimSpace(string(output)), nil
 }
 
-// RunOneShotStreaming executes claude and streams stderr through onProgress while capturing stdout.
-func RunOneShotStreaming(ctx context.Context, name, dir, message string, onProgress func(string)) (string, error) {
+// RunOneShotStreaming executes claude with --output-format stream-json,
+// parses structured events through onProgress, and returns the final result text.
+func RunOneShotStreaming(ctx context.Context, name, dir, message string, onProgress func(StreamEvent)) (string, error) {
 	cmd := exec.CommandContext(ctx, "claude",
 		"--agent", name,
 		"--permission-mode", "dontAsk",
+		"--verbose",
+		"--output-format", "stream-json",
 		"-p", message,
 	)
 	cmd.Dir = dir
@@ -53,26 +57,34 @@ func RunOneShotStreaming(ctx context.Context, name, dir, message string, onProgr
 	}
 
 	var wg sync.WaitGroup
-	var result strings.Builder
+	var result string
+	var mu sync.Mutex
 
 	wg.Add(2)
 
-	// Capture stdout for final result
+	// Parse JSON stream from stdout
 	go func() {
 		defer wg.Done()
-		io.Copy(&result, stdout)
-	}()
-
-	// Stream stderr lines through callback
-	go func() {
-		defer wg.Done()
-		scanner := bufio.NewScanner(stderr)
+		scanner := bufio.NewScanner(stdout)
 		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 		for scanner.Scan() {
-			if onProgress != nil {
-				onProgress(scanner.Text())
+			for _, ev := range ParseStreamJSON(scanner.Text()) {
+				if ev.Kind == EventResult {
+					mu.Lock()
+					result = ev.Text
+					mu.Unlock()
+				}
+				if onProgress != nil {
+					onProgress(ev)
+				}
 			}
 		}
+	}()
+
+	// Drain stderr
+	go func() {
+		defer wg.Done()
+		io.Copy(io.Discard, stderr)
 	}()
 
 	wg.Wait()
@@ -83,5 +95,5 @@ func RunOneShotStreaming(ctx context.Context, name, dir, message string, onProgr
 		return "", fmt.Errorf("claude exited: %w", err)
 	}
 
-	return strings.TrimSpace(result.String()), nil
+	return strings.TrimSpace(result), nil
 }

@@ -33,6 +33,7 @@ func DefaultCommandBuilder(ctx context.Context, name, dir, program string) *Comm
 		Args: []string{
 			"--agent", name,
 			"--permission-mode", "dontAsk",
+			"--verbose",
 			"-p", program,
 		},
 		Dir: dir,
@@ -46,7 +47,7 @@ type AgentLoop struct {
 	SleepDuration    time.Duration
 	ArchiveEvery     int // run cubit archive every N sessions (0 = disabled)
 	MaxErrors        int // exit loop after N consecutive session errors (0 = default 3)
-	OnOutput         func(line string)
+	OnOutput         func(event StreamEvent)
 	OnLifecycle      func(event string) // session_start, session_end, error, sleeping, goals_empty, woke
 	Wake             chan struct{}       // signal to interrupt sleep early (new goals arrived)
 }
@@ -72,6 +73,12 @@ func (l *AgentLoop) RunOnce(ctx context.Context) error {
 	}
 
 	spec := l.CommandBuilder(ctx, l.Name, l.Dir, program)
+
+	// When callbacks are active, use stream-json for structured event parsing.
+	if l.OnOutput != nil {
+		spec.Args = append(spec.Args, "--output-format", "stream-json")
+	}
+
 	cmd := exec.CommandContext(ctx, spec.Name, spec.Args...)
 	cmd.Dir = spec.Dir
 	if spec.Env != nil {
@@ -94,7 +101,7 @@ func (l *AgentLoop) RunOnce(ctx context.Context) error {
 	return nil
 }
 
-// runStreaming pipes stderr line-by-line through OnOutput for real-time activity.
+// runStreaming parses stream-json from stdout and dispatches StreamEvents through OnOutput.
 func (l *AgentLoop) runStreaming(ctx context.Context, cmd *exec.Cmd) error {
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -115,22 +122,22 @@ func (l *AgentLoop) runStreaming(ctx context.Context, cmd *exec.Cmd) error {
 	var wg sync.WaitGroup
 	wg.Add(2)
 
-	// stdout → terminal only
+	// stdout → parse JSON stream events
 	go func() {
 		defer wg.Done()
-		io.Copy(os.Stdout, stdout)
-	}()
-
-	// stderr → terminal + per-line callback
-	go func() {
-		defer wg.Done()
-		scanner := bufio.NewScanner(stderr)
+		scanner := bufio.NewScanner(stdout)
 		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 		for scanner.Scan() {
-			line := scanner.Text()
-			fmt.Fprintln(os.Stderr, line)
-			l.OnOutput(line)
+			for _, ev := range ParseStreamJSON(scanner.Text()) {
+				l.OnOutput(ev)
+			}
 		}
+	}()
+
+	// stderr → drain silently (stream-json puts everything on stdout)
+	go func() {
+		defer wg.Done()
+		io.Copy(io.Discard, stderr)
 	}()
 
 	wg.Wait()

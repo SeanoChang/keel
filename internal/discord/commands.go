@@ -6,6 +6,7 @@ import (
 	"log"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/bwmarrin/discordgo"
 
@@ -154,17 +155,48 @@ func (b *Bot) cmdAsk(s *discordgo.Session, m *discordgo.MessageCreate, agentName
 	}
 
 	ctx := context.Background()
+	var mu sync.Mutex
+	var tools []string
 
-	onProgress := func(line string) {
-		clean := ansiRe.ReplaceAllString(line, "")
-		clean = strings.TrimSpace(clean)
-		if clean == "" {
-			return
+	onProgress := func(ev loop.StreamEvent) {
+		mu.Lock()
+		defer mu.Unlock()
+
+		switch ev.Kind {
+		case loop.EventToolUse:
+			tools = append(tools, loop.ShortToolName(ev.ToolName))
+			trail := formatToolTrail(tools)
+			msg := fmt.Sprintf("**%s** — Running... (%d tools)\n%s", agentName, len(tools), trail)
+			if ev.ToolInput != "" {
+				input := ev.ToolInput
+				if len(input) > 100 {
+					input = input[:100] + "..."
+				}
+				msg += " `" + input + "`"
+			}
+			progress.Update(msg)
+
+		case loop.EventThinking:
+			status := fmt.Sprintf("**%s** — Thinking...", agentName)
+			if len(tools) > 0 {
+				status += fmt.Sprintf(" (%d tools)\n%s", len(tools), formatToolTrail(tools))
+			}
+			progress.Update(status)
+
+		case loop.EventToolResult:
+			status := fmt.Sprintf("**%s** — Processing...", agentName)
+			if len(tools) > 0 {
+				status += fmt.Sprintf(" (%d tools)\n%s", len(tools), formatToolTrail(tools))
+			}
+			progress.Update(status)
+
+		case loop.EventText:
+			status := fmt.Sprintf("**%s** — Responding...", agentName)
+			if len(tools) > 0 {
+				status += fmt.Sprintf(" (%d tools)\n%s", len(tools), formatToolTrail(tools))
+			}
+			progress.Update(status)
 		}
-		if len(clean) > 200 {
-			clean = clean[:200] + "..."
-		}
-		progress.Update(fmt.Sprintf("**%s** — Running... `%s`", agentName, clean))
 	}
 
 	b.sendStatus(agentName, "!ask started")

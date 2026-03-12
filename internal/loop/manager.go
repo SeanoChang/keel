@@ -24,7 +24,7 @@ func NewManager() *Manager {
 	}
 }
 
-func (m *Manager) Start(name, dir string, builder CommandBuilder, sleep time.Duration, archiveEvery int, onOutput func(string), onLifecycle func(string)) error {
+func (m *Manager) Start(name, dir string, builder CommandBuilder, sleep time.Duration, archiveEvery int, onOutput func(StreamEvent), onLifecycle func(string)) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 

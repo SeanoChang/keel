@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -15,8 +14,6 @@ import (
 	"github.com/SeanoChang/keel/internal/loop"
 	"github.com/SeanoChang/keel/internal/workspace"
 )
-
-var ansiRe = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
 
 type Bot struct {
 	session      *discordgo.Session
@@ -122,9 +119,12 @@ func (b *Bot) onMessageCreate(s *discordgo.Session, m *discordgo.MessageCreate) 
 
 // sessionHandlers returns an (onOutput, onLifecycle) pair that manages a single
 // ProgressMessage per session — edited in-place as claude streams tool activity.
-func (b *Bot) sessionHandlers(agentName, channelID string) (onOutput func(string), onLifecycle func(string)) {
+func (b *Bot) sessionHandlers(agentName, channelID string) (onOutput func(loop.StreamEvent), onLifecycle func(string)) {
 	var progress *ProgressMessage
 	var mu sync.Mutex
+	var tools []string
+	var lastCost float64
+	var lastDurationMs int64
 
 	onLifecycle = func(event string) {
 		mu.Lock()
@@ -133,13 +133,21 @@ func (b *Bot) sessionHandlers(agentName, channelID string) (onOutput func(string
 		switch event {
 		case "session_start":
 			progress = NewProgressMessage(b.session, channelID)
+			tools = nil
+			lastCost = 0
+			lastDurationMs = 0
 			_ = progress.Send(fmt.Sprintf("**%s** — Running...", agentName))
 			b.sendStatus(agentName, "Session started")
 
 		case "session_end":
 			if progress != nil {
 				progress.Flush()
-				progress.Finalize(fmt.Sprintf("**%s** — Session complete.", agentName))
+				summary := fmt.Sprintf("**%s** — Session complete.", agentName)
+				if len(tools) > 0 {
+					summary += " " + sessionStats(len(tools), lastCost, lastDurationMs)
+					summary += "\n" + formatToolTrail(tools)
+				}
+				progress.Finalize(summary)
 				progress = nil
 			}
 			b.sendStatus(agentName, "Session complete")
@@ -147,7 +155,12 @@ func (b *Bot) sessionHandlers(agentName, channelID string) (onOutput func(string
 		case "goals_empty":
 			if progress != nil {
 				progress.Flush()
-				progress.Finalize(fmt.Sprintf("**%s** — No goals remaining. Loop stopped.", agentName))
+				summary := fmt.Sprintf("**%s** — No goals remaining. Loop stopped.", agentName)
+				if len(tools) > 0 {
+					summary += " " + sessionStats(len(tools), lastCost, lastDurationMs)
+					summary += "\n" + formatToolTrail(tools)
+				}
+				progress.Finalize(summary)
 				progress = nil
 			} else {
 				b.session.ChannelMessageSend(channelID, fmt.Sprintf("**%s** — No goals remaining. Loop stopped.", agentName))
@@ -183,22 +196,86 @@ func (b *Bot) sessionHandlers(agentName, channelID string) (onOutput func(string
 		}
 	}
 
-	onOutput = func(line string) {
+	onOutput = func(ev loop.StreamEvent) {
 		mu.Lock()
 		defer mu.Unlock()
 
-		clean := ansiRe.ReplaceAllString(line, "")
-		clean = strings.TrimSpace(clean)
-		if clean == "" || progress == nil {
+		if progress == nil {
 			return
 		}
-		if len(clean) > 200 {
-			clean = clean[:200] + "..."
+
+		switch ev.Kind {
+		case loop.EventToolUse:
+			tools = append(tools, loop.ShortToolName(ev.ToolName))
+			trail := formatToolTrail(tools)
+			msg := fmt.Sprintf("**%s** — Running... (%d tools)\n%s", agentName, len(tools), trail)
+			if ev.ToolInput != "" {
+				input := ev.ToolInput
+				if len(input) > 100 {
+					input = input[:100] + "..."
+				}
+				msg += " `" + input + "`"
+			}
+			progress.Update(msg)
+
+		case loop.EventThinking:
+			status := fmt.Sprintf("**%s** — Thinking...", agentName)
+			if len(tools) > 0 {
+				status += fmt.Sprintf(" (%d tools)\n%s", len(tools), formatToolTrail(tools))
+			}
+			progress.Update(status)
+
+		case loop.EventToolResult:
+			status := fmt.Sprintf("**%s** — Processing...", agentName)
+			if len(tools) > 0 {
+				status += fmt.Sprintf(" (%d tools)\n%s", len(tools), formatToolTrail(tools))
+			}
+			progress.Update(status)
+
+		case loop.EventText:
+			status := fmt.Sprintf("**%s** — Responding...", agentName)
+			if len(tools) > 0 {
+				status += fmt.Sprintf(" (%d tools)\n%s", len(tools), formatToolTrail(tools))
+			}
+			progress.Update(status)
+
+		case loop.EventResult:
+			lastCost = ev.Cost
+			lastDurationMs = ev.DurationMs
 		}
-		progress.Update(fmt.Sprintf("**%s** — Running... `%s`", agentName, clean))
 	}
 
 	return
+}
+
+// formatToolTrail builds a compact tool sequence for Discord display.
+func formatToolTrail(tools []string) string {
+	if len(tools) == 0 {
+		return ""
+	}
+	display := tools
+	prefix := ""
+	if len(display) > 15 {
+		display = display[len(display)-15:]
+		prefix = "… → "
+	}
+	formatted := make([]string, len(display))
+	for i, t := range display {
+		formatted[i] = "`" + t + "`"
+	}
+	return prefix + strings.Join(formatted, " → ")
+}
+
+// sessionStats formats a compact stats suffix like "(12 tools, $0.16, 45s)".
+func sessionStats(toolCount int, cost float64, durationMs int64) string {
+	parts := []string{fmt.Sprintf("%d tools", toolCount)}
+	if cost > 0 {
+		parts = append(parts, fmt.Sprintf("$%.2f", cost))
+	}
+	if durationMs > 0 {
+		parts = append(parts, fmt.Sprintf("%ds", durationMs/1000))
+	}
+	return "(" + strings.Join(parts, ", ") + ")"
 }
 
 // sendStatus sends a short event to the status channel (if configured).
