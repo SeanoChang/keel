@@ -81,9 +81,6 @@ func (b *Bot) cmdGoals(ch config.ChannelConfig) string {
 	if goals == "" {
 		return "GOALS.md is empty."
 	}
-	if len(goals) > 1900 {
-		goals = goals[:1900] + "\n... (truncated)"
-	}
 	return fmt.Sprintf("```\n%s\n```", goals)
 }
 
@@ -96,9 +93,6 @@ func (b *Bot) cmdLog(ch config.ChannelConfig, n int) string {
 		return "log.md is empty."
 	}
 	content := strings.Join(lines, "\n")
-	if len(content) > 1900 {
-		content = content[:1900] + "\n... (truncated)"
-	}
 	return fmt.Sprintf("```\n%s\n```", content)
 }
 
@@ -213,11 +207,14 @@ func (b *Bot) cmdAsk(s *discordgo.Session, m *discordgo.MessageCreate, agentName
 	if response == "" {
 		response = "(empty response)"
 	}
-	if len(response) > 1900 {
-		response = response[:1900] + "\n... (truncated)"
-	}
 
-	progress.Finalize(response)
+	if len(response) <= 1900 {
+		progress.Finalize(response)
+	} else {
+		// Finalize the progress message with the first chunk, send the rest as follow-ups
+		progress.Finalize(response[:1900])
+		sendChunked(s, m.ChannelID, response[1900:])
+	}
 	b.sendStatus(agentName, "!ask complete")
 }
 

@@ -291,9 +291,33 @@ func (b *Bot) sendStatus(agentName, event string) {
 }
 
 func (b *Bot) reply(s *discordgo.Session, m *discordgo.MessageCreate, msg string) {
-	_, err := s.ChannelMessageSend(m.ChannelID, msg)
-	if err != nil {
-		log.Printf("[keel] discord send error: %v", err)
+	if len(msg) <= 1900 {
+		if _, err := s.ChannelMessageSend(m.ChannelID, msg); err != nil {
+			log.Printf("[keel] discord send error: %v", err)
+		}
+		return
+	}
+	sendChunked(s, m.ChannelID, msg)
+}
+
+// sendChunked splits a long message into ≤1900-char chunks and sends each as a
+// separate Discord message. Splits on newline boundaries when possible.
+func sendChunked(s *discordgo.Session, channelID, text string) {
+	const maxLen = 1900
+	for len(text) > 0 {
+		if len(text) <= maxLen {
+			s.ChannelMessageSend(channelID, text)
+			return
+		}
+		// Find a newline to split on within the limit
+		cut := strings.LastIndex(text[:maxLen], "\n")
+		if cut <= 0 {
+			cut = maxLen
+		}
+		s.ChannelMessageSend(channelID, text[:cut])
+		text = text[cut:]
+		// Trim leading newline from next chunk
+		text = strings.TrimPrefix(text, "\n")
 	}
 }
 
