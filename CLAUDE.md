@@ -37,7 +37,7 @@ Copy `config/discord.example.toml` to `config/discord.toml` and fill in your Dis
 
 ## Agent Directory Layout
 
-Each agent is a directory under `~/.ark/<name>/` with:
+Each agent is a directory under `~/.ark/agents-home/<name>/` with:
 - `GOALS.md` — objectives (human adds, agent removes when complete)
 - `PROGRAM.md` — instructions for how the agent should work
 - `MEMORY.md` — agent-maintained working context

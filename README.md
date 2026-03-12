@@ -43,8 +43,8 @@ Downloads the latest release for your platform and migrates agent workspaces.
 ### 1. Create an agent workspace
 
 ```bash
-mkdir -p ~/.ark/noah
-echo "## Build the landing page" > ~/.ark/noah/GOALS.md
+mkdir -p ~/.ark/agents-home/noah
+echo "## Build the landing page" > ~/.ark/agents-home/noah/GOALS.md
 ```
 
 ### 2. Run it
@@ -63,6 +63,7 @@ Keel loops: read goals → run `claude --agent` → sleep → repeat, until `GOA
 | `keel serve` | Start the Discord bot with channel-per-agent mapping |
 | `keel status <agent>` | Show goals, memory token count, log tail |
 | `keel update` | Pull latest binary from GitHub and run workspace migrations |
+| `keel --version` | Print the current keel version |
 
 ### `keel run`
 
@@ -70,7 +71,7 @@ Keel loops: read goals → run `claude --agent` → sleep → repeat, until `GOA
 keel run <agent> [--dir <path>] [--sleep <duration>]
 ```
 
-- `--dir` — Agent directory (default: `~/.ark/<agent>`)
+- `--dir` — Agent directory (default: `~/.ark/agents-home/<agent>`)
 - `--sleep` — Pause between sessions (default: `5s`)
 
 Exits when `GOALS.md` is empty or on `Ctrl+C`.
@@ -78,11 +79,12 @@ Exits when `GOALS.md` is empty or on `Ctrl+C`.
 ### `keel serve`
 
 ```
-keel serve [--config <path>] [--sleep <duration>]
+keel serve [--config <path>] [--sleep <duration>] [--archive-every <n>]
 ```
 
 - `--config` — Path to Discord config TOML (default: `config/discord.toml`)
 - `--sleep` — Pause between agent sessions (default: `5s`)
+- `--archive-every` — Run cubit archive every N sessions, 0 to disable (default: `50`)
 
 Each Discord channel maps to one agent. Messages become goals; agent logs stream back via `fsnotify`.
 
@@ -94,7 +96,7 @@ keel update [--migrate-only]
 
 - `--migrate-only` — Skip binary download, run workspace migrations only
 
-Migrations ensure all agent dirs under `~/.ark/` have required files (`GOALS.md`, `MEMORY.md`, `log.md`, `PROGRAM.md`).
+Migrations ensure all agent dirs under `~/.ark/agents-home/` have required files (`GOALS.md`, `MEMORY.md`, `log.md`, `PROGRAM.md`).
 
 ## Discord Setup
 
@@ -118,11 +120,11 @@ status_channel_id = ""              # optional broadcast channel
 
 [channels.noah]
 channel_id = "123456789012345678"
-agent_dir = "~/.ark/noah"
+agent_dir = "~/.ark/agents-home/noah"
 
 [channels.atlas]
 channel_id = "987654321098765432"
-agent_dir = "~/.ark/atlas"
+agent_dir = "~/.ark/agents-home/atlas"
 ```
 
 Each `[channels.<name>]` section maps a Discord channel to an independent agent workspace.
@@ -152,10 +154,10 @@ Any non-command message is appended to `GOALS.md` as a timestamped goal, and the
 
 ## Agent Directory Layout
 
-Each agent lives at `~/.ark/<name>/`:
+Each agent lives at `~/.ark/agents-home/<name>/`:
 
 ```
-~/.ark/noah/
+~/.ark/agents-home/noah/
 ├── GOALS.md          # Objectives — human adds, agent removes when complete
 ├── PROGRAM.md        # Instructions for how the agent should behave
 ├── MEMORY.md         # Agent-maintained working context

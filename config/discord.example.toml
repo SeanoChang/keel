@@ -7,4 +7,4 @@ status_channel_id = ""              # optional: broadcast channel for all agents
 
 [channels.noah]
 channel_id = "YOUR_CHANNEL_ID"
-agent_dir = "~/.ark/noah"
+agent_dir = "~/.ark/agents-home/noah"

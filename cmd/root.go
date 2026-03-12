@@ -9,13 +9,14 @@ import (
 )
 
 var rootCmd = &cobra.Command{
-	Use:   "keel",
-	Short: "Agent loop manager and Discord bridge",
+	Use:     "keel",
+	Short:   "Agent loop manager and Discord bridge",
+	Version: Version,
 }
 
 func init() {
 	// run
-	runCmd.Flags().StringVar(&runAgentDir, "dir", "", "Agent directory (default: ~/.ark/<agent>)")
+	runCmd.Flags().StringVar(&runAgentDir, "dir", "", "Agent directory (default: ~/.ark/agents-home/<agent>)")
 	runCmd.Flags().DurationVar(&runSleep, "sleep", 5*time.Second, "Sleep between sessions")
 	rootCmd.AddCommand(runCmd)
 
@@ -26,7 +27,7 @@ func init() {
 	rootCmd.AddCommand(serveCmd)
 
 	// status
-	statusCmd.Flags().StringVar(&statusDir, "dir", "", "Agent directory (default: ~/.ark/<agent>)")
+	statusCmd.Flags().StringVar(&statusDir, "dir", "", "Agent directory (default: ~/.ark/agents-home/<agent>)")
 	rootCmd.AddCommand(statusCmd)
 
 	// update

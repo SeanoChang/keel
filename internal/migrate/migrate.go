@@ -19,14 +19,14 @@ func AgentDir(dir string) error {
 }
 
 // ScanAndMigrate finds all agent directories under root and migrates each.
-// root defaults to ~/.ark if empty.
+// root defaults to ~/.ark/agents-home if empty.
 func ScanAndMigrate(root string) error {
 	if root == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
 			return fmt.Errorf("home dir: %w", err)
 		}
-		root = filepath.Join(home, ".ark")
+		root = filepath.Join(home, ".ark", "agents-home")
 	}
 
 	entries, err := os.ReadDir(root)

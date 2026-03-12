@@ -38,7 +38,7 @@ func resolveAgentDir(name, override string) string {
 		return override
 	}
 	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".ark", name)
+	return filepath.Join(home, ".ark", "agents-home", name)
 }
 
 func runRun(cmd *cobra.Command, args []string) error {
