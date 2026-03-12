@@ -6,6 +6,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
@@ -81,6 +82,10 @@ func (b *Bot) onMessageCreate(s *discordgo.Session, m *discordgo.MessageCreate) 
 		return
 	}
 
+	if !b.cfg.IsAdmin(m.Author.ID) {
+		return
+	}
+
 	agentName, ch, ok := b.cfg.ResolveChannel(m.ChannelID)
 	if !ok {
 		return
@@ -104,30 +109,107 @@ func (b *Bot) onMessageCreate(s *discordgo.Session, m *discordgo.MessageCreate) 
 
 	b.reply(s, m, fmt.Sprintf("Goal added for **%s**. Use `!goals` to see all.", agentName))
 
-	if !b.loopMgr.IsRunning(agentName) {
-		handler := b.activityHandler(agentName, m.ChannelID)
-		err := b.loopMgr.Start(agentName, ch.AgentDir, loop.DefaultCommandBuilder, b.sleepBetween, b.archiveEvery, handler)
+	if b.loopMgr.IsRunning(agentName) {
+		b.loopMgr.Nudge(agentName)
+	} else {
+		onOutput, onLifecycle := b.sessionHandlers(agentName, m.ChannelID)
+		err := b.loopMgr.Start(agentName, ch.AgentDir, loop.DefaultCommandBuilder, b.sleepBetween, b.archiveEvery, onOutput, onLifecycle)
 		if err != nil {
 			log.Printf("[keel] error starting loop for %s: %v", agentName, err)
-		} else {
-			b.reply(s, m, fmt.Sprintf("Agent loop started for **%s**.", agentName))
 		}
 	}
 }
 
-// activityHandler returns a per-line callback that sends agent tool activity to Discord.
-func (b *Bot) activityHandler(agentName, channelID string) func(string) {
-	return func(line string) {
+// sessionHandlers returns an (onOutput, onLifecycle) pair that manages a single
+// ProgressMessage per session — edited in-place as claude streams tool activity.
+func (b *Bot) sessionHandlers(agentName, channelID string) (onOutput func(string), onLifecycle func(string)) {
+	var progress *ProgressMessage
+	var mu sync.Mutex
+
+	onLifecycle = func(event string) {
+		mu.Lock()
+		defer mu.Unlock()
+
+		switch event {
+		case "session_start":
+			progress = NewProgressMessage(b.session, channelID)
+			_ = progress.Send(fmt.Sprintf("**%s** — Running...", agentName))
+			b.sendStatus(agentName, "Session started")
+
+		case "session_end":
+			if progress != nil {
+				progress.Flush()
+				progress.Finalize(fmt.Sprintf("**%s** — Session complete.", agentName))
+				progress = nil
+			}
+			b.sendStatus(agentName, "Session complete")
+
+		case "goals_empty":
+			if progress != nil {
+				progress.Flush()
+				progress.Finalize(fmt.Sprintf("**%s** — No goals remaining. Loop stopped.", agentName))
+				progress = nil
+			} else {
+				b.session.ChannelMessageSend(channelID, fmt.Sprintf("**%s** — No goals remaining. Loop stopped.", agentName))
+			}
+			b.sendStatus(agentName, "No goals — loop stopped")
+
+		case "sleeping":
+			if progress != nil {
+				progress.Flush()
+			}
+			b.sendStatus(agentName, "Sleeping between sessions...")
+
+		case "woke":
+			b.sendStatus(agentName, "Woke up — new goals detected")
+
+		case "too_many_errors":
+			if progress != nil {
+				progress.Flush()
+				progress.Finalize(fmt.Sprintf("**%s** — Too many errors. Loop stopped.", agentName))
+				progress = nil
+			}
+			b.sendStatus(agentName, "Too many errors — loop stopped")
+
+		default:
+			if strings.HasPrefix(event, "error:") {
+				if progress != nil {
+					progress.Flush()
+					progress.Finalize(fmt.Sprintf("**%s** — %s", agentName, event))
+					progress = nil
+				}
+			}
+			b.sendStatus(agentName, event)
+		}
+	}
+
+	onOutput = func(line string) {
+		mu.Lock()
+		defer mu.Unlock()
+
 		clean := ansiRe.ReplaceAllString(line, "")
 		clean = strings.TrimSpace(clean)
-		if clean == "" {
+		if clean == "" || progress == nil {
 			return
 		}
-		ts := time.Now().Format("15:04:05")
-		msg := fmt.Sprintf("`[%s - %s]` %s", ts, agentName, clean)
-		if _, err := b.session.ChannelMessageSend(channelID, msg); err != nil {
-			log.Printf("[keel] %s: activity send error: %v", agentName, err)
+		if len(clean) > 200 {
+			clean = clean[:200] + "..."
 		}
+		progress.Update(fmt.Sprintf("**%s** — Running... `%s`", agentName, clean))
+	}
+
+	return
+}
+
+// sendStatus sends a short event to the status channel (if configured).
+func (b *Bot) sendStatus(agentName, event string) {
+	if b.cfg.Bot.StatusChannelID == "" {
+		return
+	}
+	ts := time.Now().Format("2006-01-02 15:04:05")
+	msg := fmt.Sprintf("`[%s - %s]` %s", ts, agentName, event)
+	if _, err := b.session.ChannelMessageSend(b.cfg.Bot.StatusChannelID, msg); err != nil {
+		log.Printf("[keel] %s: status send error: %v", agentName, err)
 	}
 }
 

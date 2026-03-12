@@ -93,7 +93,7 @@ func TestManagerStartStop(t *testing.T) {
 		}
 	}
 
-	err := mgr.Start("test", dir, builder, 100*time.Millisecond, 0, nil)
+	err := mgr.Start("test", dir, builder, 100*time.Millisecond, 0, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +101,7 @@ func TestManagerStartStop(t *testing.T) {
 		t.Error("expected loop to be running")
 	}
 
-	err = mgr.Start("test", dir, builder, 100*time.Millisecond, 0, nil)
+	err = mgr.Start("test", dir, builder, 100*time.Millisecond, 0, nil, nil)
 	if err == nil {
 		t.Error("expected error when starting duplicate")
 	}

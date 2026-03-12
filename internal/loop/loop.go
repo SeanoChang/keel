@@ -47,6 +47,8 @@ type AgentLoop struct {
 	ArchiveEvery     int // run cubit archive every N sessions (0 = disabled)
 	MaxErrors        int // exit loop after N consecutive session errors (0 = default 3)
 	OnOutput         func(line string)
+	OnLifecycle      func(event string) // session_start, session_end, error, sleeping, goals_empty, woke
+	Wake             chan struct{}       // signal to interrupt sleep early (new goals arrived)
 }
 
 func (l *AgentLoop) maxErrors() int {
@@ -54,6 +56,12 @@ func (l *AgentLoop) maxErrors() int {
 		return l.MaxErrors
 	}
 	return 3
+}
+
+func (l *AgentLoop) lifecycle(event string) {
+	if l.OnLifecycle != nil {
+		l.OnLifecycle(event)
+	}
 }
 
 // RunOnce executes one agent session.
@@ -146,10 +154,12 @@ func (l *AgentLoop) Run(ctx context.Context) {
 		}
 		if !workspace.HasGoals(l.Dir) {
 			log.Printf("[keel] %s: no goals, loop exiting", l.Name)
+			l.lifecycle("goals_empty")
 			return
 		}
 
 		log.Printf("[keel] %s: starting session", l.Name)
+		l.lifecycle("session_start")
 		err := l.RunOnce(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
@@ -157,12 +167,15 @@ func (l *AgentLoop) Run(ctx context.Context) {
 			}
 			consecutiveErrors++
 			log.Printf("[keel] %s: session error (%d/%d): %v", l.Name, consecutiveErrors, l.maxErrors(), err)
+			l.lifecycle(fmt.Sprintf("error: %v (%d/%d)", err, consecutiveErrors, l.maxErrors()))
 			if consecutiveErrors >= l.maxErrors() {
 				log.Printf("[keel] %s: too many consecutive errors, exiting loop", l.Name)
+				l.lifecycle("too_many_errors")
 				return
 			}
 		} else {
 			consecutiveErrors = 0
+			l.lifecycle("session_end")
 		}
 
 		sessions++
@@ -170,9 +183,12 @@ func (l *AgentLoop) Run(ctx context.Context) {
 			l.runArchive()
 		}
 
+		l.lifecycle("sleeping")
 		select {
 		case <-ctx.Done():
 			return
+		case <-l.Wake:
+			l.lifecycle("woke")
 		case <-time.After(l.SleepDuration):
 		}
 	}

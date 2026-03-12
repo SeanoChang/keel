@@ -8,9 +8,10 @@ import (
 )
 
 type BotConfig struct {
-	TokenEnv        string `toml:"token_env"`
-	GuildID         string `toml:"guild_id"`
-	StatusChannelID string `toml:"status_channel_id"`
+	TokenEnv        string   `toml:"token_env"`
+	GuildID         string   `toml:"guild_id"`
+	StatusChannelID string   `toml:"status_channel_id"`
+	AdminUsers      []string `toml:"admin_users"` // Discord user IDs allowed to interact
 }
 
 type ChannelConfig struct {
@@ -31,6 +32,20 @@ func (c *Config) ResolveChannel(discordChannelID string) (string, ChannelConfig,
 		}
 	}
 	return "", ChannelConfig{}, false
+}
+
+// IsAdmin returns true if the given Discord user ID is in the admin list.
+// If no admin users are configured, all users are allowed.
+func (c *Config) IsAdmin(userID string) bool {
+	if len(c.Bot.AdminUsers) == 0 {
+		return true
+	}
+	for _, id := range c.Bot.AdminUsers {
+		if id == userID {
+			return true
+		}
+	}
+	return false
 }
 
 func Load(path string) (*Config, error) {

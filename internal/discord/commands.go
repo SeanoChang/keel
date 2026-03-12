@@ -6,7 +6,6 @@ import (
 	"log"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/bwmarrin/discordgo"
 
@@ -36,6 +35,8 @@ func (b *Bot) handleCommand(s *discordgo.Session, m *discordgo.MessageCreate, ag
 	case "ask":
 		if args == "" {
 			response = "Usage: `!ask <message>`"
+		} else if b.loopMgr.IsRunning(agentName) {
+			response = fmt.Sprintf("Agent **%s** loop is running. Use `!stop` first or send a goal instead.", agentName)
 		} else {
 			go b.cmdAsk(s, m, agentName, ch, args)
 			return
@@ -123,8 +124,8 @@ func (b *Bot) cmdStart(name string, ch config.ChannelConfig) string {
 	if !workspace.HasGoals(ch.AgentDir) {
 		return fmt.Sprintf("Agent **%s** has no goals. Send a message first.", name)
 	}
-	handler := b.activityHandler(name, ch.ChannelID)
-	err := b.loopMgr.Start(name, ch.AgentDir, loop.DefaultCommandBuilder, b.sleepBetween, b.archiveEvery, handler)
+	onOutput, onLifecycle := b.sessionHandlers(name, ch.ChannelID)
+	err := b.loopMgr.Start(name, ch.AgentDir, loop.DefaultCommandBuilder, b.sleepBetween, b.archiveEvery, onOutput, onLifecycle)
 	if err != nil {
 		return fmt.Sprintf("Error starting **%s**: %v", name, err)
 	}
@@ -146,32 +147,34 @@ func cmdHelp() string {
 }
 
 func (b *Bot) cmdAsk(s *discordgo.Session, m *discordgo.MessageCreate, agentName string, ch config.ChannelConfig, message string) {
-	_ = s.ChannelTyping(m.ChannelID)
+	progress := NewProgressMessage(s, m.ChannelID)
+	if err := progress.Send(fmt.Sprintf("**%s** — Running...", agentName)); err != nil {
+		log.Printf("[keel] %s: progress send error: %v", agentName, err)
+		return
+	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := context.Background()
 
-	// Keep typing indicator alive (expires after 10s)
-	typingDone := make(chan struct{})
-	go func() {
-		ticker := time.NewTicker(8 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-typingDone:
-				return
-			case <-ticker.C:
-				_ = s.ChannelTyping(m.ChannelID)
-			}
+	onProgress := func(line string) {
+		clean := ansiRe.ReplaceAllString(line, "")
+		clean = strings.TrimSpace(clean)
+		if clean == "" {
+			return
 		}
-	}()
+		if len(clean) > 200 {
+			clean = clean[:200] + "..."
+		}
+		progress.Update(fmt.Sprintf("**%s** — Running... `%s`", agentName, clean))
+	}
 
-	response, err := loop.RunOneShot(ctx, agentName, ch.AgentDir, message)
-	close(typingDone)
+	b.sendStatus(agentName, "!ask started")
+
+	response, err := loop.RunOneShotStreaming(ctx, agentName, ch.AgentDir, message, onProgress)
 
 	if err != nil {
 		log.Printf("[keel] %s: ask error: %v", agentName, err)
-		b.reply(s, m, fmt.Sprintf("Error: %v", err))
+		progress.Finalize(fmt.Sprintf("**%s** — Error: %v", agentName, err))
+		b.sendStatus(agentName, fmt.Sprintf("!ask error: %v", err))
 		return
 	}
 
@@ -182,7 +185,8 @@ func (b *Bot) cmdAsk(s *discordgo.Session, m *discordgo.MessageCreate, agentName
 		response = response[:1900] + "\n... (truncated)"
 	}
 
-	b.reply(s, m, response)
+	progress.Finalize(response)
+	b.sendStatus(agentName, "!ask complete")
 }
 
 func (b *Bot) cmdClear(ch config.ChannelConfig, name string) string {
