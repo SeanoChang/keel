@@ -1,13 +1,15 @@
 package loop
 
 import (
-	"bytes"
+	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"os"
 	"os/exec"
+	"sync"
 	"time"
 
 	"github.com/SeanoChang/keel/internal/workspace"
@@ -38,12 +40,20 @@ func DefaultCommandBuilder(ctx context.Context, name, dir, program string) *Comm
 }
 
 type AgentLoop struct {
-	Name           string
-	Dir            string
-	CommandBuilder CommandBuilder
-	SleepDuration  time.Duration
-	ArchiveEvery   int // run cubit archive every N sessions (0 = disabled)
-	OnOutput       func(line string)
+	Name             string
+	Dir              string
+	CommandBuilder   CommandBuilder
+	SleepDuration    time.Duration
+	ArchiveEvery     int // run cubit archive every N sessions (0 = disabled)
+	MaxErrors        int // exit loop after N consecutive session errors (0 = default 3)
+	OnOutput         func(line string)
+}
+
+func (l *AgentLoop) maxErrors() int {
+	if l.MaxErrors > 0 {
+		return l.MaxErrors
+	}
+	return 3
 }
 
 // RunOnce executes one agent session.
@@ -60,22 +70,63 @@ func (l *AgentLoop) RunOnce(ctx context.Context) error {
 		cmd.Env = spec.Env
 	}
 
-	var buf bytes.Buffer
 	if l.OnOutput != nil {
-		// Tee to terminal and capture for the callback (Discord mode)
-		cmd.Stdout = io.MultiWriter(os.Stdout, &buf)
-		cmd.Stderr = io.MultiWriter(os.Stderr, &buf)
-	} else {
-		// Stream directly to terminal (CLI mode)
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
+		return l.runStreaming(ctx, cmd)
 	}
 
-	err = cmd.Run()
-	if l.OnOutput != nil && buf.Len() > 0 {
-		l.OnOutput(buf.String())
+	// CLI mode: direct pipe to terminal
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return fmt.Errorf("agent %s exited: %w", l.Name, err)
 	}
+	return nil
+}
+
+// runStreaming pipes stderr line-by-line through OnOutput for real-time activity.
+func (l *AgentLoop) runStreaming(ctx context.Context, cmd *exec.Cmd) error {
+	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		return fmt.Errorf("stdout pipe: %w", err)
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return fmt.Errorf("stderr pipe: %w", err)
+	}
+
+	if err := cmd.Start(); err != nil {
+		if errors.Is(err, exec.ErrNotFound) {
+			return fmt.Errorf("command not found: %w", err)
+		}
+		return fmt.Errorf("start agent: %w", err)
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	// stdout → terminal only
+	go func() {
+		defer wg.Done()
+		io.Copy(os.Stdout, stdout)
+	}()
+
+	// stderr → terminal + per-line callback
+	go func() {
+		defer wg.Done()
+		scanner := bufio.NewScanner(stderr)
+		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+		for scanner.Scan() {
+			line := scanner.Text()
+			fmt.Fprintln(os.Stderr, line)
+			l.OnOutput(line)
+		}
+	}()
+
+	wg.Wait()
+	if err := cmd.Wait(); err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -85,9 +136,10 @@ func (l *AgentLoop) RunOnce(ctx context.Context) error {
 }
 
 // Run loops: check goals -> runOnce -> maybe archive -> sleep -> repeat.
-// Exits when goals empty or ctx cancelled.
+// Exits when goals empty, ctx cancelled, or too many consecutive errors.
 func (l *AgentLoop) Run(ctx context.Context) {
 	var sessions int
+	var consecutiveErrors int
 	for {
 		if ctx.Err() != nil {
 			return
@@ -103,7 +155,14 @@ func (l *AgentLoop) Run(ctx context.Context) {
 			if ctx.Err() != nil {
 				return
 			}
-			log.Printf("[keel] %s: session error: %v", l.Name, err)
+			consecutiveErrors++
+			log.Printf("[keel] %s: session error (%d/%d): %v", l.Name, consecutiveErrors, l.maxErrors(), err)
+			if consecutiveErrors >= l.maxErrors() {
+				log.Printf("[keel] %s: too many consecutive errors, exiting loop", l.Name)
+				return
+			}
+		} else {
+			consecutiveErrors = 0
 		}
 
 		sessions++

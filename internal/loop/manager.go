@@ -23,7 +23,7 @@ func NewManager() *Manager {
 	}
 }
 
-func (m *Manager) Start(name, dir string, builder CommandBuilder, sleep time.Duration, archiveEvery int) error {
+func (m *Manager) Start(name, dir string, builder CommandBuilder, sleep time.Duration, archiveEvery int, onOutput func(string)) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -45,6 +45,7 @@ func (m *Manager) Start(name, dir string, builder CommandBuilder, sleep time.Dur
 		CommandBuilder: builder,
 		SleepDuration:  sleep,
 		ArchiveEvery:   archiveEvery,
+		OnOutput:       onOutput,
 	}
 
 	m.loops[name] = &runningLoop{cancel: cancel, done: done}

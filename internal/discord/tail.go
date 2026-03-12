@@ -1,38 +1,42 @@
 package discord
 
 import (
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 	"github.com/fsnotify/fsnotify"
 )
 
 type LogTailer struct {
-	agentName string
-	dir       string
-	channelID string
-	session   *discordgo.Session
-	offset    int64
-	stop      chan struct{}
-	once      sync.Once
+	agentName       string
+	dir             string
+	channelID       string
+	statusChannelID string
+	session         *discordgo.Session
+	offset          int64
+	stop            chan struct{}
+	once            sync.Once
 }
 
-func NewLogTailer(agentName, dir, channelID string, session *discordgo.Session) *LogTailer {
+func NewLogTailer(agentName, dir, channelID, statusChannelID string, session *discordgo.Session) *LogTailer {
 	var offset int64
 	if info, err := os.Stat(filepath.Join(dir, "log.md")); err == nil {
 		offset = info.Size()
 	}
 	return &LogTailer{
-		agentName: agentName,
-		dir:       dir,
-		channelID: channelID,
-		session:   session,
-		offset:    offset,
-		stop:      make(chan struct{}),
+		agentName:       agentName,
+		dir:             dir,
+		channelID:       channelID,
+		statusChannelID: statusChannelID,
+		session:         session,
+		offset:          offset,
+		stop:            make(chan struct{}),
 	}
 }
 
@@ -115,6 +119,24 @@ func (t *LogTailer) readNewLines(logPath string) {
 	if err != nil {
 		log.Printf("[keel] %s: discord send error: %v", t.agentName, err)
 	}
+
+	t.sendStatus(content)
+}
+
+func (t *LogTailer) sendStatus(content string) {
+	if t.statusChannelID == "" {
+		return
+	}
+	ts := time.Now().Format("2006-01-02 15:04:05")
+	prefix := fmt.Sprintf("[%s - %s]", ts, t.agentName)
+	// Trim for status channel — keep it concise
+	if len(content) > 1500 {
+		content = content[:1500] + "\n... (truncated)"
+	}
+	msg := fmt.Sprintf("%s\n```\n%s\n```", prefix, content)
+	if _, err := t.session.ChannelMessageSend(t.statusChannelID, msg); err != nil {
+		log.Printf("[keel] %s: status channel send error: %v", t.agentName, err)
+	}
 }
 
 func (t *LogTailer) checkGoalsEmpty(goalsPath string) {
@@ -125,5 +147,6 @@ func (t *LogTailer) checkGoalsEmpty(goalsPath string) {
 	if len(strings.TrimSpace(string(data))) == 0 {
 		_, _ = t.session.ChannelMessageSend(t.channelID,
 			"All goals complete for **"+t.agentName+"**.")
+		t.sendStatus("All goals complete.")
 	}
 }

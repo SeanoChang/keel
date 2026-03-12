@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -13,6 +14,8 @@ import (
 	"github.com/SeanoChang/keel/internal/loop"
 	"github.com/SeanoChang/keel/internal/workspace"
 )
+
+var ansiRe = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
 
 type Bot struct {
 	session      *discordgo.Session
@@ -56,7 +59,7 @@ func (b *Bot) Start() error {
 	log.Printf("[keel] Discord bot connected")
 
 	for name, ch := range b.cfg.Channels {
-		tailer := NewLogTailer(name, ch.AgentDir, ch.ChannelID, b.session)
+		tailer := NewLogTailer(name, ch.AgentDir, ch.ChannelID, b.cfg.Bot.StatusChannelID, b.session)
 		b.tailers[name] = tailer
 		go tailer.Start()
 	}
@@ -102,11 +105,28 @@ func (b *Bot) onMessageCreate(s *discordgo.Session, m *discordgo.MessageCreate) 
 	b.reply(s, m, fmt.Sprintf("Goal added for **%s**. Use `!goals` to see all.", agentName))
 
 	if !b.loopMgr.IsRunning(agentName) {
-		err := b.loopMgr.Start(agentName, ch.AgentDir, loop.DefaultCommandBuilder, b.sleepBetween, b.archiveEvery)
+		handler := b.activityHandler(agentName, m.ChannelID)
+		err := b.loopMgr.Start(agentName, ch.AgentDir, loop.DefaultCommandBuilder, b.sleepBetween, b.archiveEvery, handler)
 		if err != nil {
 			log.Printf("[keel] error starting loop for %s: %v", agentName, err)
 		} else {
 			b.reply(s, m, fmt.Sprintf("Agent loop started for **%s**.", agentName))
+		}
+	}
+}
+
+// activityHandler returns a per-line callback that sends agent tool activity to Discord.
+func (b *Bot) activityHandler(agentName, channelID string) func(string) {
+	return func(line string) {
+		clean := ansiRe.ReplaceAllString(line, "")
+		clean = strings.TrimSpace(clean)
+		if clean == "" {
+			return
+		}
+		ts := time.Now().Format("15:04:05")
+		msg := fmt.Sprintf("`[%s - %s]` %s", ts, agentName, clean)
+		if _, err := b.session.ChannelMessageSend(channelID, msg); err != nil {
+			log.Printf("[keel] %s: activity send error: %v", agentName, err)
 		}
 	}
 }

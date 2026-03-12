@@ -123,7 +123,8 @@ func (b *Bot) cmdStart(name string, ch config.ChannelConfig) string {
 	if !workspace.HasGoals(ch.AgentDir) {
 		return fmt.Sprintf("Agent **%s** has no goals. Send a message first.", name)
 	}
-	err := b.loopMgr.Start(name, ch.AgentDir, loop.DefaultCommandBuilder, b.sleepBetween, b.archiveEvery)
+	handler := b.activityHandler(name, ch.ChannelID)
+	err := b.loopMgr.Start(name, ch.AgentDir, loop.DefaultCommandBuilder, b.sleepBetween, b.archiveEvery, handler)
 	if err != nil {
 		return fmt.Sprintf("Error starting **%s**: %v", name, err)
 	}
@@ -147,7 +148,7 @@ func cmdHelp() string {
 func (b *Bot) cmdAsk(s *discordgo.Session, m *discordgo.MessageCreate, agentName string, ch config.ChannelConfig, message string) {
 	_ = s.ChannelTyping(m.ChannelID)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	// Keep typing indicator alive (expires after 10s)
