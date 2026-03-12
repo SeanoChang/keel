@@ -176,6 +176,21 @@ func (b *Bot) sessionHandlers(agentName, channelID string) (onOutput func(loop.S
 		case "woke":
 			b.sendStatus(agentName, "Woke up — new goals detected")
 
+		case "agent_exit":
+			if progress != nil {
+				progress.Flush()
+				summary := fmt.Sprintf("**%s** — Agent exited. Loop stopped.", agentName)
+				if len(tools) > 0 {
+					summary += " " + sessionStats(len(tools), lastCost, lastDurationMs)
+					summary += "\n" + formatToolTrail(tools)
+				}
+				progress.Finalize(summary)
+				progress = nil
+			} else {
+				b.session.ChannelMessageSend(channelID, fmt.Sprintf("**%s** — Agent exited. Loop stopped.", agentName))
+			}
+			b.sendStatus(agentName, "Agent requested exit — loop stopped")
+
 		case "too_many_errors":
 			if progress != nil {
 				progress.Flush()

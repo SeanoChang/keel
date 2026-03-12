@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-const DefaultProgram = "Read GOALS.md. Work on the highest-priority goal. When complete, remove it from GOALS.md. Log what you accomplished to log.md. Update MEMORY.md with any useful context. Exit when done."
+const DefaultProgram = "Read GOALS.md. Work on the highest-priority goal. When complete, remove it from GOALS.md. Log what you accomplished to log.md. Update MEMORY.md with any useful context. When no goals remain, create an empty file called .exit to signal you are done."
 
 // keep unexported alias so existing internal calls compile unchanged
 const defaultProgram = DefaultProgram
@@ -125,6 +125,21 @@ func MemoryTokenCount(dir string) (int, error) {
 	}
 	words := len(strings.Fields(content))
 	return words * 4 / 3, nil
+}
+
+// HasExitSignal checks if the agent has requested to stop the loop.
+func HasExitSignal(dir string) bool {
+	_, err := os.Stat(filepath.Join(dir, ".exit"))
+	return err == nil
+}
+
+// ClearExitSignal removes the .exit sentinel file.
+func ClearExitSignal(dir string) error {
+	err := os.Remove(filepath.Join(dir, ".exit"))
+	if os.IsNotExist(err) {
+		return nil
+	}
+	return err
 }
 
 func LogSize(dir string) (int64, error) {

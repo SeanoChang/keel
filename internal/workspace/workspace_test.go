@@ -116,6 +116,34 @@ func TestMemoryTokenCount(t *testing.T) {
 	}
 }
 
+func TestHasExitSignal(t *testing.T) {
+	dir := setupWorkspace(t)
+
+	// No .exit file → false
+	if HasExitSignal(dir) {
+		t.Error("expected no exit signal initially")
+	}
+
+	// Create .exit → true
+	os.WriteFile(filepath.Join(dir, ".exit"), []byte(""), 0644)
+	if !HasExitSignal(dir) {
+		t.Error("expected exit signal after creating .exit")
+	}
+
+	// Clear it → false
+	if err := ClearExitSignal(dir); err != nil {
+		t.Fatal(err)
+	}
+	if HasExitSignal(dir) {
+		t.Error("expected no exit signal after clearing")
+	}
+
+	// Clearing when already absent → no error
+	if err := ClearExitSignal(dir); err != nil {
+		t.Errorf("clearing absent .exit should not error: %v", err)
+	}
+}
+
 func TestClearGoals(t *testing.T) {
 	dir := setupWorkspace(t)
 	err := ClearGoals(dir)

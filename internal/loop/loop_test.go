@@ -133,6 +133,62 @@ func TestLoopExitsWhenGoalsStale(t *testing.T) {
 	}
 }
 
+func TestLoopExitsOnExitSignal(t *testing.T) {
+	dir := setupTestAgent(t)
+
+	var runs int
+	var mu sync.Mutex
+	var lifecycleEvents []string
+
+	loop := &AgentLoop{
+		Name: "test",
+		Dir:  dir,
+		CommandBuilder: func(ctx context.Context, name, dir, program string) *CommandSpec {
+			mu.Lock()
+			runs++
+			mu.Unlock()
+			// Agent creates .exit sentinel on first run
+			os.WriteFile(filepath.Join(dir, ".exit"), []byte(""), 0644)
+			return &CommandSpec{
+				Name: "true",
+				Args: nil,
+				Dir:  dir,
+			}
+		},
+		SleepDuration: 10 * time.Millisecond,
+		OnLifecycle: func(event string) {
+			mu.Lock()
+			lifecycleEvents = append(lifecycleEvents, event)
+			mu.Unlock()
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	loop.Run(ctx)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if runs != 1 {
+		t.Errorf("expected 1 run before exit signal, got %d", runs)
+	}
+	found := false
+	for _, ev := range lifecycleEvents {
+		if ev == "agent_exit" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected 'agent_exit' lifecycle event, got: %v", lifecycleEvents)
+	}
+	// Sentinel file should be cleaned up
+	if _, err := os.Stat(filepath.Join(dir, ".exit")); !os.IsNotExist(err) {
+		t.Error("expected .exit to be removed after loop exit")
+	}
+}
+
 func TestManagerStartStop(t *testing.T) {
 	dir := setupTestAgent(t)
 

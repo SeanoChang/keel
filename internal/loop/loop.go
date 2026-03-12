@@ -197,6 +197,14 @@ func (l *AgentLoop) Run(ctx context.Context) {
 			l.lifecycle("session_end")
 		}
 
+		// Agent requested exit via sentinel file.
+		if workspace.HasExitSignal(l.Dir) {
+			workspace.ClearExitSignal(l.Dir)
+			log.Printf("[keel] %s: agent requested exit (.exit), loop stopping", l.Name)
+			l.lifecycle("agent_exit")
+			return
+		}
+
 		// Detect stale loops: if goals didn't change, the agent made no progress.
 		goalsAfter, _ := workspace.ReadGoals(l.Dir)
 		if goalsAfter == goalsBefore {
