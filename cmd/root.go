@@ -1,33 +1,42 @@
-// cmd/root.go
 package cmd
 
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/spf13/cobra"
 )
 
 var rootCmd = &cobra.Command{
 	Use:   "keel",
-	Short: "Discord channel proxy for cubit",
-}
-
-var serveCmd = &cobra.Command{
-	Use:   "serve",
-	Short: "Start the Discord bot and connect to cubit",
-	RunE: func(cmd *cobra.Command, args []string) error {
-		fmt.Println("keel serve: not yet implemented")
-		return nil
-	},
+	Short: "Agent loop manager and Discord bridge",
 }
 
 func init() {
+	// run
+	runCmd.Flags().StringVar(&runAgentDir, "dir", "", "Agent directory (default: ~/.ark/<agent>)")
+	runCmd.Flags().DurationVar(&runSleep, "sleep", 5*time.Second, "Sleep between sessions")
+	rootCmd.AddCommand(runCmd)
+
+	// serve
+	serveCmd.Flags().StringVar(&serveConfigPath, "config", "config/discord.toml", "Path to Discord config")
+	serveCmd.Flags().DurationVar(&serveSleep, "sleep", 5*time.Second, "Sleep between agent sessions")
+	serveCmd.Flags().IntVar(&serveArchiveEvery, "archive-every", 50, "Run cubit archive every N sessions (0 = disabled)")
 	rootCmd.AddCommand(serveCmd)
+
+	// status
+	statusCmd.Flags().StringVar(&statusDir, "dir", "", "Agent directory (default: ~/.ark/<agent>)")
+	rootCmd.AddCommand(statusCmd)
+
+	// update
+	updateCmd.Flags().BoolVar(&updateMigrateOnly, "migrate-only", false, "Run workspace migrations without downloading a new binary")
+	rootCmd.AddCommand(updateCmd)
 }
 
 func Execute() {
 	if err := rootCmd.Execute(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }

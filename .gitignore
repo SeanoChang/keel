@@ -1,0 +1,4 @@
+keel
+*.exe
+config/discord.toml
+.env
