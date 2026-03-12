@@ -47,8 +47,9 @@ type AgentLoop struct {
 	SleepDuration    time.Duration
 	ArchiveEvery     int // run cubit archive every N sessions (0 = disabled)
 	MaxErrors        int // exit loop after N consecutive session errors (0 = default 3)
+	MaxStale         int // exit loop after N consecutive sessions with unchanged goals (0 = default 2)
 	OnOutput         func(event StreamEvent)
-	OnLifecycle      func(event string) // session_start, session_end, error, sleeping, goals_empty, woke
+	OnLifecycle      func(event string) // session_start, session_end, error, sleeping, goals_empty, woke, stale
 	Wake             chan struct{}       // signal to interrupt sleep early (new goals arrived)
 }
 
@@ -57,6 +58,13 @@ func (l *AgentLoop) maxErrors() int {
 		return l.MaxErrors
 	}
 	return 3
+}
+
+func (l *AgentLoop) maxStale() int {
+	if l.MaxStale > 0 {
+		return l.MaxStale
+	}
+	return 2
 }
 
 func (l *AgentLoop) lifecycle(event string) {
@@ -151,10 +159,11 @@ func (l *AgentLoop) runStreaming(ctx context.Context, cmd *exec.Cmd) error {
 }
 
 // Run loops: check goals -> runOnce -> maybe archive -> sleep -> repeat.
-// Exits when goals empty, ctx cancelled, or too many consecutive errors.
+// Exits when goals empty, ctx cancelled, too many consecutive errors, or stale (goals unchanged).
 func (l *AgentLoop) Run(ctx context.Context) {
 	var sessions int
 	var consecutiveErrors int
+	var staleCount int
 	for {
 		if ctx.Err() != nil {
 			return
@@ -164,6 +173,9 @@ func (l *AgentLoop) Run(ctx context.Context) {
 			l.lifecycle("goals_empty")
 			return
 		}
+
+		// Snapshot goals before session to detect stale loops.
+		goalsBefore, _ := workspace.ReadGoals(l.Dir)
 
 		log.Printf("[keel] %s: starting session", l.Name)
 		l.lifecycle("session_start")
@@ -185,6 +197,20 @@ func (l *AgentLoop) Run(ctx context.Context) {
 			l.lifecycle("session_end")
 		}
 
+		// Detect stale loops: if goals didn't change, the agent made no progress.
+		goalsAfter, _ := workspace.ReadGoals(l.Dir)
+		if goalsAfter == goalsBefore {
+			staleCount++
+			log.Printf("[keel] %s: goals unchanged (%d/%d)", l.Name, staleCount, l.maxStale())
+			if staleCount >= l.maxStale() {
+				log.Printf("[keel] %s: goals stale for %d sessions, exiting loop", l.Name, staleCount)
+				l.lifecycle("stale")
+				return
+			}
+		} else {
+			staleCount = 0
+		}
+
 		sessions++
 		if l.ArchiveEvery > 0 && sessions%l.ArchiveEvery == 0 {
 			l.runArchive()
@@ -195,6 +221,7 @@ func (l *AgentLoop) Run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-l.Wake:
+			staleCount = 0 // new goals arrived, reset stale counter
 			l.lifecycle("woke")
 		case <-time.After(l.SleepDuration):
 		}

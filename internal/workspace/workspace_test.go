@@ -41,6 +41,20 @@ func TestHasGoals(t *testing.T) {
 	if HasGoals(dir) {
 		t.Error("expected HasGoals=false for missing file")
 	}
+
+	// Boilerplate-only file should be treated as empty
+	boilerplate := "# Goals\n\n<!-- Add goals here. Agent removes completed goals. -->\n"
+	os.WriteFile(filepath.Join(dir, "GOALS.md"), []byte(boilerplate), 0644)
+	if HasGoals(dir) {
+		t.Error("expected HasGoals=false for boilerplate-only file")
+	}
+
+	// Boilerplate + actual goal should be true
+	withGoal := boilerplate + "\n## [2026-03-12 15:00] from seanoc\nResearch crude oil\n"
+	os.WriteFile(filepath.Join(dir, "GOALS.md"), []byte(withGoal), 0644)
+	if !HasGoals(dir) {
+		t.Error("expected HasGoals=true when goals exist alongside boilerplate")
+	}
 }
 
 func TestAppendGoal(t *testing.T) {

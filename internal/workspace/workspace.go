@@ -26,7 +26,35 @@ func HasGoals(dir string) bool {
 	if err != nil {
 		return false
 	}
-	return len(strings.TrimSpace(string(data))) > 0
+	return len(strings.TrimSpace(stripGoalsBoilerplate(string(data)))) > 0
+}
+
+// stripGoalsBoilerplate removes structural content from GOALS.md that isn't an actual goal:
+// the # heading, HTML comments, and blank lines.
+func stripGoalsBoilerplate(s string) string {
+	// Strip HTML comments (<!-- ... -->), possibly spanning multiple lines
+	for {
+		start := strings.Index(s, "<!--")
+		if start == -1 {
+			break
+		}
+		end := strings.Index(s[start:], "-->")
+		if end == -1 {
+			s = s[:start]
+			break
+		}
+		s = s[:start] + s[start+end+3:]
+	}
+	// Strip top-level heading lines (# ...)
+	var lines []string
+	for _, line := range strings.Split(s, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "# ") || trimmed == "#" {
+			continue
+		}
+		lines = append(lines, line)
+	}
+	return strings.Join(lines, "\n")
 }
 
 func AppendGoal(dir, username, message string) error {

@@ -80,6 +80,59 @@ func TestLoopStopsWhenGoalsEmpty(t *testing.T) {
 	}
 }
 
+func TestLoopExitsWhenGoalsStale(t *testing.T) {
+	dir := setupTestAgent(t)
+
+	var runs int
+	var mu sync.Mutex
+	var lifecycleEvents []string
+
+	loop := &AgentLoop{
+		Name: "test",
+		Dir:  dir,
+		CommandBuilder: func(ctx context.Context, name, dir, program string) *CommandSpec {
+			mu.Lock()
+			runs++
+			mu.Unlock()
+			// Simulate agent that reads files but never modifies GOALS.md
+			return &CommandSpec{
+				Name: "true",
+				Args: nil,
+				Dir:  dir,
+			}
+		},
+		SleepDuration: 10 * time.Millisecond,
+		MaxStale:      2,
+		OnLifecycle: func(event string) {
+			mu.Lock()
+			lifecycleEvents = append(lifecycleEvents, event)
+			mu.Unlock()
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	loop.Run(ctx)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if runs != 2 {
+		t.Errorf("expected 2 runs before stale exit, got %d", runs)
+	}
+	// Should have emitted "stale" lifecycle event
+	found := false
+	for _, ev := range lifecycleEvents {
+		if ev == "stale" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected 'stale' lifecycle event, got: %v", lifecycleEvents)
+	}
+}
+
 func TestManagerStartStop(t *testing.T) {
 	dir := setupTestAgent(t)
 
