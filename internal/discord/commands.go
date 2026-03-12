@@ -1,9 +1,12 @@
 package discord
 
 import (
+	"context"
 	"fmt"
+	"log"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 
@@ -30,6 +33,13 @@ func (b *Bot) handleCommand(s *discordgo.Session, m *discordgo.MessageCreate, ag
 		response = b.cmdLog(ch, n)
 	case "memory":
 		response = b.cmdMemory(ch)
+	case "ask":
+		if args == "" {
+			response = "Usage: `!ask <message>`"
+		} else {
+			go b.cmdAsk(s, m, agentName, ch, args)
+			return
+		}
 	case "stop":
 		response = b.cmdStop(agentName)
 	case "start":
@@ -122,6 +132,7 @@ func (b *Bot) cmdStart(name string, ch config.ChannelConfig) string {
 
 func cmdHelp() string {
 	return "**Keel Commands**\n" +
+		"`!ask <msg>` — quick one-shot chat with the agent\n" +
 		"`!help` — show this message\n" +
 		"`!status` — agent status (running, goals, memory)\n" +
 		"`!goals` — show current GOALS.md\n" +
@@ -131,6 +142,46 @@ func cmdHelp() string {
 		"`!stop` — stop the agent loop\n" +
 		"`!clear` — clear all goals\n\n" +
 		"Any other message is added as a goal."
+}
+
+func (b *Bot) cmdAsk(s *discordgo.Session, m *discordgo.MessageCreate, agentName string, ch config.ChannelConfig, message string) {
+	_ = s.ChannelTyping(m.ChannelID)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	// Keep typing indicator alive (expires after 10s)
+	typingDone := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(8 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-typingDone:
+				return
+			case <-ticker.C:
+				_ = s.ChannelTyping(m.ChannelID)
+			}
+		}
+	}()
+
+	response, err := loop.RunOneShot(ctx, agentName, ch.AgentDir, message)
+	close(typingDone)
+
+	if err != nil {
+		log.Printf("[keel] %s: ask error: %v", agentName, err)
+		b.reply(s, m, fmt.Sprintf("Error: %v", err))
+		return
+	}
+
+	if response == "" {
+		response = "(empty response)"
+	}
+	if len(response) > 1900 {
+		response = response[:1900] + "\n... (truncated)"
+	}
+
+	b.reply(s, m, response)
 }
 
 func (b *Bot) cmdClear(ch config.ChannelConfig, name string) string {
