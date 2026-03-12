@@ -1,9 +1,12 @@
 package loop
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"log"
+	"os"
 	"os/exec"
 	"time"
 
@@ -57,9 +60,20 @@ func (l *AgentLoop) RunOnce(ctx context.Context) error {
 		cmd.Env = spec.Env
 	}
 
-	output, err := cmd.CombinedOutput()
-	if l.OnOutput != nil && len(output) > 0 {
-		l.OnOutput(string(output))
+	var buf bytes.Buffer
+	if l.OnOutput != nil {
+		// Tee to terminal and capture for the callback (Discord mode)
+		cmd.Stdout = io.MultiWriter(os.Stdout, &buf)
+		cmd.Stderr = io.MultiWriter(os.Stderr, &buf)
+	} else {
+		// Stream directly to terminal (CLI mode)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+	}
+
+	err = cmd.Run()
+	if l.OnOutput != nil && buf.Len() > 0 {
+		l.OnOutput(buf.String())
 	}
 	if err != nil {
 		if ctx.Err() != nil {
