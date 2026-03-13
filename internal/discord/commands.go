@@ -162,38 +162,39 @@ func (b *Bot) cmdAsk(s *discordgo.Session, m *discordgo.MessageCreate, agentName
 
 		switch ev.Kind {
 		case loop.EventToolUse:
-			tools = append(tools, loop.ShortToolName(ev.ToolName))
-			trail := formatToolTrail(tools)
-			msg := fmt.Sprintf("**%s** — Running... (%d tools)\n%s", agentName, len(tools), trail)
-			if ev.ToolInput != "" {
-				input := ev.ToolInput
-				if len(input) > 100 {
-					input = input[:100] + "..."
-				}
-				msg += " `" + input + "`"
+			toolName := loop.ShortToolName(ev.ToolName)
+			tools = append(tools, toolName)
+			detail := ev.ToolInput
+			if len(detail) > 200 {
+				detail = detail[:200] + "..."
 			}
+			msg := fmt.Sprintf("**%s** — `%s`", agentName, toolName)
+			if detail != "" {
+				msg += " " + detail
+			}
+			msg += fmt.Sprintf("\n-# %d tools", len(tools))
 			progress.Update(msg)
 
 		case loop.EventThinking:
-			status := fmt.Sprintf("**%s** — Thinking...", agentName)
+			msg := fmt.Sprintf("**%s** — Thinking...", agentName)
 			if len(tools) > 0 {
-				status += fmt.Sprintf(" (%d tools)\n%s", len(tools), formatToolTrail(tools))
+				msg += fmt.Sprintf("\n-# %d tools", len(tools))
 			}
-			progress.Update(status)
+			progress.Update(msg)
 
 		case loop.EventToolResult:
-			status := fmt.Sprintf("**%s** — Processing...", agentName)
+			msg := fmt.Sprintf("**%s** — Processing...", agentName)
 			if len(tools) > 0 {
-				status += fmt.Sprintf(" (%d tools)\n%s", len(tools), formatToolTrail(tools))
+				msg += fmt.Sprintf("\n-# %d tools", len(tools))
 			}
-			progress.Update(status)
+			progress.Update(msg)
 
 		case loop.EventText:
-			status := fmt.Sprintf("**%s** — Responding...", agentName)
+			msg := fmt.Sprintf("**%s** — Responding...", agentName)
 			if len(tools) > 0 {
-				status += fmt.Sprintf(" (%d tools)\n%s", len(tools), formatToolTrail(tools))
+				msg += fmt.Sprintf("\n-# %d tools", len(tools))
 			}
-			progress.Update(status)
+			progress.Update(msg)
 		}
 	}
 

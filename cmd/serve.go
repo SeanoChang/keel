@@ -27,9 +27,9 @@ var serveCmd = &cobra.Command{
 }
 
 func expandPath(path string) string {
-	if strings.HasPrefix(path, "~/") {
+	if after, ok := strings.CutPrefix(path, "~/"); ok {
 		home, _ := os.UserHomeDir()
-		return filepath.Join(home, path[2:])
+		return filepath.Join(home, after)
 	}
 	return path
 }

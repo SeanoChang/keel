@@ -141,17 +141,30 @@ func summarizeInput(tool string, raw json.RawMessage) string {
 
 	// Known tools with specific field preferences
 	switch tool {
-	case "Read", "Write", "Edit":
-		return extractString(m, "file_path", shortPath)
+	case "Read":
+		return extractString(m, "file_path", identity)
+	case "Write":
+		return extractString(m, "file_path", identity)
+	case "Edit":
+		return extractString(m, "file_path", identity)
 	case "Bash":
-		return extractString(m, "command", truncate60)
+		return extractString(m, "command", truncate120)
 	case "Grep":
 		s := extractString(m, "pattern", identity)
+		path := extractString(m, "path", shortPath)
+		if s != "" && path != "" {
+			return fmt.Sprintf("/%s/ in %s", s, path)
+		}
 		if s != "" {
 			return fmt.Sprintf("/%s/", s)
 		}
 	case "Glob":
-		return extractString(m, "pattern", identity)
+		s := extractString(m, "pattern", identity)
+		path := extractString(m, "path", shortPath)
+		if s != "" && path != "" {
+			return fmt.Sprintf("%s in %s", s, path)
+		}
+		return s
 	case "WebSearch":
 		return extractString(m, "query", identity)
 	case "WebFetch":
@@ -161,7 +174,7 @@ func summarizeInput(tool string, raw json.RawMessage) string {
 	case "Skill":
 		return extractString(m, "skill", identity)
 	case "TodoWrite":
-		return extractString(m, "todos", truncate60)
+		return extractString(m, "todos", truncate120)
 	}
 
 	// Generic fallback: grab the first short string field from the input
@@ -186,11 +199,11 @@ func firstStringField(m map[string]json.RawMessage) string {
 // ShortToolName returns a display-friendly tool name.
 // MCP tools like "mcp__claude_ai_Notion__notion-search" become "Notion/notion-search".
 func ShortToolName(name string) string {
-	if !strings.HasPrefix(name, "mcp__") {
+	// mcp__<server>__<tool> → server/tool
+	rest, ok := strings.CutPrefix(name, "mcp__")
+	if !ok {
 		return name
 	}
-	// mcp__<server>__<tool> → server/tool
-	rest := strings.TrimPrefix(name, "mcp__")
 	parts := strings.SplitN(rest, "__", 2)
 	if len(parts) == 2 {
 		server := parts[0]
@@ -215,9 +228,9 @@ func extractString(m map[string]json.RawMessage, key string, transform func(stri
 
 func identity(s string) string { return s }
 
-func truncate60(s string) string {
-	if len(s) > 60 {
-		return s[:60] + "..."
+func truncate120(s string) string {
+	if len(s) > 120 {
+		return s[:120] + "..."
 	}
 	return s
 }

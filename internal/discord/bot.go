@@ -113,8 +113,6 @@ func (b *Bot) onMessageCreate(s *discordgo.Session, m *discordgo.MessageCreate) 
 		return
 	}
 
-	b.reply(s, m, fmt.Sprintf("Goal added for **%s**. Use `!goals` to see all.", agentName))
-
 	if b.loopMgr.IsRunning(agentName) {
 		b.loopMgr.Nudge(agentName)
 	} else {
@@ -230,38 +228,39 @@ func (b *Bot) sessionHandlers(agentName, channelID string) (onOutput func(loop.S
 
 		switch ev.Kind {
 		case loop.EventToolUse:
-			tools = append(tools, loop.ShortToolName(ev.ToolName))
-			trail := formatToolTrail(tools)
-			msg := fmt.Sprintf("**%s** — Running... (%d tools)\n%s", agentName, len(tools), trail)
-			if ev.ToolInput != "" {
-				input := ev.ToolInput
-				if len(input) > 100 {
-					input = input[:100] + "..."
-				}
-				msg += " `" + input + "`"
+			toolName := loop.ShortToolName(ev.ToolName)
+			tools = append(tools, toolName)
+			detail := ev.ToolInput
+			if len(detail) > 200 {
+				detail = detail[:200] + "..."
 			}
+			msg := fmt.Sprintf("**%s** — `%s`", agentName, toolName)
+			if detail != "" {
+				msg += " " + detail
+			}
+			msg += fmt.Sprintf("\n-# %d tools", len(tools))
 			progress.Update(msg)
 
 		case loop.EventThinking:
-			status := fmt.Sprintf("**%s** — Thinking...", agentName)
+			msg := fmt.Sprintf("**%s** — Thinking...", agentName)
 			if len(tools) > 0 {
-				status += fmt.Sprintf(" (%d tools)\n%s", len(tools), formatToolTrail(tools))
+				msg += fmt.Sprintf("\n-# %d tools", len(tools))
 			}
-			progress.Update(status)
+			progress.Update(msg)
 
 		case loop.EventToolResult:
-			status := fmt.Sprintf("**%s** — Processing...", agentName)
+			msg := fmt.Sprintf("**%s** — Processing...", agentName)
 			if len(tools) > 0 {
-				status += fmt.Sprintf(" (%d tools)\n%s", len(tools), formatToolTrail(tools))
+				msg += fmt.Sprintf("\n-# %d tools", len(tools))
 			}
-			progress.Update(status)
+			progress.Update(msg)
 
 		case loop.EventText:
-			status := fmt.Sprintf("**%s** — Responding...", agentName)
+			msg := fmt.Sprintf("**%s** — Responding...", agentName)
 			if len(tools) > 0 {
-				status += fmt.Sprintf(" (%d tools)\n%s", len(tools), formatToolTrail(tools))
+				msg += fmt.Sprintf("\n-# %d tools", len(tools))
 			}
-			progress.Update(status)
+			progress.Update(msg)
 
 		case loop.EventResult:
 			lastCost = ev.Cost
@@ -381,7 +380,17 @@ func (b *Bot) checkSchedules() {
 		b.sendStatus(name, fmt.Sprintf("Scheduled goals fired: %s", strings.Join(names, ", ")))
 
 		if b.loopMgr.IsRunning(name) {
-			b.loopMgr.Nudge(name)
+			if schedule.HasUrgent(fired) {
+				log.Printf("[keel] scheduler: urgent entry for %s — interrupting current session", name)
+				b.sendStatus(name, "Urgent schedule — interrupting session")
+				b.loopMgr.Stop(name)
+				onOutput, onLifecycle := b.sessionHandlers(name, ch.ChannelID)
+				if err := b.loopMgr.Start(name, ch.AgentDir, loop.DefaultCommandBuilder, b.sleepBetween, b.archiveEvery, onOutput, onLifecycle); err != nil {
+					log.Printf("[keel] scheduler: error restarting %s: %v", name, err)
+				}
+			} else {
+				b.loopMgr.Nudge(name)
+			}
 		} else {
 			onOutput, onLifecycle := b.sessionHandlers(name, ch.ChannelID)
 			if err := b.loopMgr.Start(name, ch.AgentDir, loop.DefaultCommandBuilder, b.sleepBetween, b.archiveEvery, onOutput, onLifecycle); err != nil {
@@ -393,10 +402,10 @@ func (b *Bot) checkSchedules() {
 
 // ParseCommand checks if a message is a ! command.
 func ParseCommand(content string) (bool, string, string) {
-	if !strings.HasPrefix(content, "!") {
+	rest, ok := strings.CutPrefix(content, "!")
+	if !ok {
 		return false, "", ""
 	}
-	rest := strings.TrimPrefix(content, "!")
 	parts := strings.SplitN(rest, " ", 2)
 	cmd := strings.TrimSpace(parts[0])
 	args := ""

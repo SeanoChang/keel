@@ -31,9 +31,9 @@ var runCmd = &cobra.Command{
 
 func resolveAgentDir(name, override string) string {
 	if override != "" {
-		if strings.HasPrefix(override, "~") {
+		if after, ok := strings.CutPrefix(override, "~"); ok {
 			home, _ := os.UserHomeDir()
-			return filepath.Join(home, override[1:])
+			return filepath.Join(home, after)
 		}
 		return override
 	}

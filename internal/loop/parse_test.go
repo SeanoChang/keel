@@ -30,8 +30,8 @@ func TestParseStreamJSON_ReadTool(t *testing.T) {
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(events))
 	}
-	if events[0].ToolInput != "…/loop/loop.go" {
-		t.Errorf("expected short path, got %q", events[0].ToolInput)
+	if events[0].ToolInput != "/Users/sean/dev/projects/keel/internal/loop/loop.go" {
+		t.Errorf("expected full path, got %q", events[0].ToolInput)
 	}
 }
 

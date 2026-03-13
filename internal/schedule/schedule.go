@@ -26,18 +26,50 @@ type TimeDir struct {
 	CronExpr string
 }
 
+type Priority int
+
+const (
+	PriorityNormal Priority = iota
+	PriorityUrgent
+)
+
 type Entry struct {
 	TimeDir  TimeDir
 	Name     string
 	Content  string
+	Priority Priority
 	FilePath string
+}
+
+// parseFrontmatter extracts priority from optional YAML frontmatter and returns
+// the remaining content. Supports: "type: urgent" or "type: normal" (default).
+func parseFrontmatter(raw string) (Priority, string) {
+	if !strings.HasPrefix(raw, "---") {
+		return PriorityNormal, raw
+	}
+	end := strings.Index(raw[3:], "---")
+	if end == -1 {
+		return PriorityNormal, raw
+	}
+	front := raw[3 : 3+end]
+	body := strings.TrimSpace(raw[3+end+3:])
+
+	priority := PriorityNormal
+	for _, line := range strings.Split(front, "\n") {
+		if after, ok := strings.CutPrefix(strings.TrimSpace(line), "type:"); ok {
+			if strings.TrimSpace(after) == "urgent" {
+				priority = PriorityUrgent
+			}
+		}
+	}
+	return priority, body
 }
 
 const isoLayout = "2006-01-02T15:04"
 
 func ParseTimeDir(name string) (TimeDir, error) {
-	if strings.HasPrefix(name, "cron-") {
-		expr := strings.ReplaceAll(strings.TrimPrefix(name, "cron-"), "_", " ")
+	if after, ok := strings.CutPrefix(name, "cron-"); ok {
+		expr := strings.ReplaceAll(after, "_", " ")
 		parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
 		if _, err := parser.Parse(expr); err != nil {
 			return TimeDir{}, fmt.Errorf("invalid cron expression %q: %w", expr, err)
@@ -80,14 +112,16 @@ func ScanDir(agentDir string) ([]Entry, error) {
 			if f.IsDir() || !strings.HasSuffix(f.Name(), ".md") {
 				continue
 			}
-			content, err := os.ReadFile(filepath.Join(schedDir, td.Name(), f.Name()))
+			raw, err := os.ReadFile(filepath.Join(schedDir, td.Name(), f.Name()))
 			if err != nil {
 				continue
 			}
+			priority, content := parseFrontmatter(string(raw))
 			entries = append(entries, Entry{
 				TimeDir:  parsed,
 				Name:     strings.TrimSuffix(f.Name(), ".md"),
-				Content:  string(content),
+				Content:  content,
+				Priority: priority,
 				FilePath: filepath.Join(schedDir, td.Name(), f.Name()),
 			})
 		}
@@ -132,6 +166,16 @@ func readLastFired(agentDir, timeDirName string) time.Time {
 func writeLastFired(agentDir, timeDirName string) error {
 	p := filepath.Join(agentDir, "schedule", timeDirName, ".last-fired")
 	return os.WriteFile(p, []byte(time.Now().Truncate(time.Minute).Format(time.RFC3339)), 0644)
+}
+
+// HasUrgent reports whether any entry has PriorityUrgent.
+func HasUrgent(entries []Entry) bool {
+	for _, e := range entries {
+		if e.Priority == PriorityUrgent {
+			return true
+		}
+	}
+	return false
 }
 
 func FireDue(agentDir string) ([]Entry, error) {

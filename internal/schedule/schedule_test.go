@@ -167,6 +167,71 @@ func TestFire_DeletesOneShotDir(t *testing.T) {
 	}
 }
 
+func TestParseFrontmatter_Urgent(t *testing.T) {
+	raw := "---\ntype: urgent\n---\nCheck PCE data"
+	priority, content := parseFrontmatter(raw)
+	if priority != PriorityUrgent {
+		t.Errorf("expected PriorityUrgent, got %v", priority)
+	}
+	if content != "Check PCE data" {
+		t.Errorf("unexpected content: %q", content)
+	}
+}
+
+func TestParseFrontmatter_Normal(t *testing.T) {
+	raw := "---\ntype: normal\n---\nMorning brief"
+	priority, content := parseFrontmatter(raw)
+	if priority != PriorityNormal {
+		t.Errorf("expected PriorityNormal, got %v", priority)
+	}
+	if content != "Morning brief" {
+		t.Errorf("unexpected content: %q", content)
+	}
+}
+
+func TestParseFrontmatter_NoFrontmatter(t *testing.T) {
+	raw := "Just a plain goal"
+	priority, content := parseFrontmatter(raw)
+	if priority != PriorityNormal {
+		t.Errorf("expected PriorityNormal, got %v", priority)
+	}
+	if content != "Just a plain goal" {
+		t.Errorf("unexpected content: %q", content)
+	}
+}
+
+func TestScanDir_UrgentEntry(t *testing.T) {
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, "schedule", "2026-03-13T08:30"), 0755)
+	os.WriteFile(filepath.Join(dir, "schedule", "2026-03-13T08:30", "check-pce.md"),
+		[]byte("---\ntype: urgent\n---\nCheck PCE data"), 0644)
+
+	entries, err := ScanDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(entries))
+	}
+	if entries[0].Priority != PriorityUrgent {
+		t.Error("expected urgent priority")
+	}
+	if entries[0].Content != "Check PCE data" {
+		t.Errorf("frontmatter should be stripped from content, got %q", entries[0].Content)
+	}
+}
+
+func TestHasUrgent(t *testing.T) {
+	normal := []Entry{{Priority: PriorityNormal}, {Priority: PriorityNormal}}
+	if HasUrgent(normal) {
+		t.Error("should not have urgent")
+	}
+	mixed := []Entry{{Priority: PriorityNormal}, {Priority: PriorityUrgent}}
+	if !HasUrgent(mixed) {
+		t.Error("should have urgent")
+	}
+}
+
 func TestFire_KeepsCronDir(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "GOALS.md"), []byte(""), 0644)
