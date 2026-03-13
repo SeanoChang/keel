@@ -152,3 +152,15 @@ func LogSize(dir string) (int64, error) {
 	}
 	return info.Size(), nil
 }
+
+// AppendScheduledGoal adds a scheduled goal to GOALS.md with metadata hint.
+func AppendScheduledGoal(dir, name, content string) error {
+	f, err := os.OpenFile(filepath.Join(dir, "GOALS.md"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	ts := time.Now().Format("2006-01-02 15:04")
+	_, err = fmt.Fprintf(f, "\n## [%s] scheduled: %s\n%s\n\n> Scheduled task. When complete, remove this goal. If no other goals remain, create .exit to signal you are done.\n", ts, name, content)
+	return err
+}

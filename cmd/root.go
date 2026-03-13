@@ -33,6 +33,14 @@ func init() {
 	// update
 	updateCmd.Flags().BoolVar(&updateMigrateOnly, "migrate-only", false, "Run workspace migrations without downloading a new binary")
 	rootCmd.AddCommand(updateCmd)
+
+	// schedule
+	scheduleAddCmd.Flags().StringVar(&scheduleAddDir, "dir", "", "Agent directory override")
+	scheduleLsCmd.Flags().StringVar(&scheduleLsDir, "dir", "", "Agent directory override")
+	scheduleRmCmd.Flags().StringVar(&scheduleRmDir, "dir", "", "Agent directory override")
+	scheduleClearCmd.Flags().StringVar(&scheduleClearDir, "dir", "", "Agent directory override")
+	scheduleCmd.AddCommand(scheduleAddCmd, scheduleLsCmd, scheduleRmCmd, scheduleClearCmd)
+	rootCmd.AddCommand(scheduleCmd)
 }
 
 func Execute() {

@@ -154,3 +154,21 @@ func TestClearGoals(t *testing.T) {
 		t.Error("expected empty goals after clear")
 	}
 }
+
+func TestAppendScheduledGoal(t *testing.T) {
+	dir := setupWorkspace(t)
+	err := AppendScheduledGoal(dir, "check-pce", "Check January PCE release")
+	if err != nil {
+		t.Fatal(err)
+	}
+	goals, _ := ReadGoals(dir)
+	if !strings.Contains(goals, "Check January PCE release") {
+		t.Error("scheduled goal content not found")
+	}
+	if !strings.Contains(goals, "scheduled: check-pce") {
+		t.Error("scheduled metadata not found")
+	}
+	if !strings.Contains(goals, "Scheduled task") {
+		t.Error("scheduled hint not found")
+	}
+}

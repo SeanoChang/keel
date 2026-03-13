@@ -12,6 +12,7 @@ import (
 
 	"github.com/SeanoChang/keel/internal/config"
 	"github.com/SeanoChang/keel/internal/loop"
+	"github.com/SeanoChang/keel/internal/schedule"
 	"github.com/SeanoChang/keel/internal/workspace"
 )
 
@@ -22,6 +23,8 @@ type Bot struct {
 	tailers      map[string]*LogTailer
 	sleepBetween time.Duration
 	archiveEvery int
+	schedStop    chan struct{} // signals scheduler goroutine to stop
+	schedDone    chan struct{} // closed when scheduler goroutine exits
 }
 
 func NewBot(cfg *config.Config, sleepBetween time.Duration, archiveEvery int) (*Bot, error) {
@@ -42,6 +45,8 @@ func NewBot(cfg *config.Config, sleepBetween time.Duration, archiveEvery int) (*
 		tailers:      make(map[string]*LogTailer),
 		sleepBetween: sleepBetween,
 		archiveEvery: archiveEvery,
+		schedStop:    make(chan struct{}),
+		schedDone:    make(chan struct{}),
 	}
 
 	session.AddHandler(b.onMessageCreate)
@@ -62,10 +67,14 @@ func (b *Bot) Start() error {
 		go tailer.Start()
 	}
 
+	go b.runScheduler()
+
 	return nil
 }
 
 func (b *Bot) Stop() {
+	close(b.schedStop)
+	<-b.schedDone
 	b.loopMgr.StopAll()
 	for _, t := range b.tailers {
 		t.Stop()
@@ -333,6 +342,52 @@ func sendChunked(s *discordgo.Session, channelID, text string) {
 		text = text[cut:]
 		// Trim leading newline from next chunk
 		text = strings.TrimPrefix(text, "\n")
+	}
+}
+
+// runScheduler sleeps until the top of each minute, then scans all agent
+// schedule dirs and fires due entries. Re-aligns on every iteration so
+// it never drifts from the wall clock regardless of checkSchedules duration.
+func (b *Bot) runScheduler() {
+	defer close(b.schedDone)
+
+	for {
+		delay := time.Until(time.Now().Truncate(time.Minute).Add(time.Minute))
+		select {
+		case <-b.schedStop:
+			return
+		case <-time.After(delay):
+		}
+		b.checkSchedules()
+	}
+}
+
+func (b *Bot) checkSchedules() {
+	for name, ch := range b.cfg.Channels {
+		fired, err := schedule.FireDue(ch.AgentDir)
+		if err != nil {
+			log.Printf("[keel] scheduler: error scanning %s: %v", name, err)
+			continue
+		}
+		if len(fired) == 0 {
+			continue
+		}
+
+		var names []string
+		for _, e := range fired {
+			names = append(names, e.Name)
+		}
+		log.Printf("[keel] scheduler: fired %d entries for %s: %s", len(fired), name, strings.Join(names, ", "))
+		b.sendStatus(name, fmt.Sprintf("Scheduled goals fired: %s", strings.Join(names, ", ")))
+
+		if b.loopMgr.IsRunning(name) {
+			b.loopMgr.Nudge(name)
+		} else {
+			onOutput, onLifecycle := b.sessionHandlers(name, ch.ChannelID)
+			if err := b.loopMgr.Start(name, ch.AgentDir, loop.DefaultCommandBuilder, b.sleepBetween, b.archiveEvery, onOutput, onLifecycle); err != nil {
+				log.Printf("[keel] scheduler: error starting %s: %v", name, err)
+			}
+		}
 	}
 }
 

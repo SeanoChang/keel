@@ -12,6 +12,7 @@ import (
 
 	"github.com/SeanoChang/keel/internal/config"
 	"github.com/SeanoChang/keel/internal/loop"
+	"github.com/SeanoChang/keel/internal/schedule"
 	"github.com/SeanoChang/keel/internal/workspace"
 )
 
@@ -48,6 +49,8 @@ func (b *Bot) handleCommand(s *discordgo.Session, m *discordgo.MessageCreate, ag
 		response = b.cmdStart(agentName, ch)
 	case "clear":
 		response = b.cmdClear(ch, agentName)
+	case "schedule":
+		response = b.cmdSchedule(ch, args)
 	case "help":
 		response = cmdHelp()
 	default:
@@ -137,6 +140,7 @@ func cmdHelp() string {
 		"`!memory` — show MEMORY.md token count\n" +
 		"`!start` — start the agent loop\n" +
 		"`!stop` — stop the agent loop\n" +
+		"`!schedule` — show scheduled goals\n" +
 		"`!clear` — clear all goals\n\n" +
 		"Any other message is added as a goal."
 }
@@ -223,4 +227,31 @@ func (b *Bot) cmdClear(ch config.ChannelConfig, name string) string {
 		return fmt.Sprintf("Error clearing GOALS.md: %v", err)
 	}
 	return fmt.Sprintf("GOALS.md cleared for **%s**. Loop will stop after current session.", name)
+}
+
+func (b *Bot) cmdSchedule(ch config.ChannelConfig, args string) string {
+	entries, err := schedule.ScanDir(ch.AgentDir)
+	if err != nil {
+		return fmt.Sprintf("Error: %v", err)
+	}
+	if len(entries) == 0 {
+		return "No scheduled goals."
+	}
+	var sb strings.Builder
+	sb.WriteString("**Scheduled Goals**\n")
+	for _, e := range entries {
+		kind := "one-shot"
+		when := e.TimeDir.At.Format("2006-01-02 15:04")
+		if e.TimeDir.Kind == schedule.KindRecurring {
+			kind = "recurring"
+			when = e.TimeDir.CronExpr
+		}
+		preview := e.Content
+		if len(preview) > 80 {
+			preview = preview[:80] + "..."
+		}
+		preview = strings.ReplaceAll(preview, "\n", " ")
+		sb.WriteString(fmt.Sprintf("`[%s]` **%s** @ %s\n%s\n\n", kind, e.Name, when, preview))
+	}
+	return sb.String()
 }
