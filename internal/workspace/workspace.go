@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-const DefaultProgram = "Read GOALS.md. Work on the highest-priority goal. When complete, remove it from GOALS.md. Log what you accomplished to log.md. Update MEMORY.md with any useful context. When no goals remain, create an empty file called .exit to signal you are done."
+const DefaultProgram = "Read GOALS.md. Work on the highest-priority goal. When complete, remove it from GOALS.md. Log what you accomplished to log.md. Update MEMORY.md with any useful context. When no goals remain, write a comprehensive report of everything you accomplished as your final response, then create an empty file called .exit to signal you are done."
 
 // keep unexported alias so existing internal calls compile unchanged
 const defaultProgram = DefaultProgram
@@ -161,6 +161,6 @@ func AppendScheduledGoal(dir, name, content string) error {
 	}
 	defer f.Close()
 	ts := time.Now().Format("2006-01-02 15:04")
-	_, err = fmt.Fprintf(f, "\n## [%s] scheduled: %s\n%s\n\n> Scheduled task. When complete, remove this goal. If no other goals remain, create .exit to signal you are done.\n", ts, name, content)
+	_, err = fmt.Fprintf(f, "\n## [%s] scheduled: %s\n%s\n\n> Scheduled task. When complete, remove this goal. If no other goals remain, write a comprehensive report of everything you accomplished as your final response, then create .exit to signal you are done.\n", ts, name, content)
 	return err
 }

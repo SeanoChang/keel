@@ -110,16 +110,6 @@ func (t *LogTailer) readNewLines(logPath string) {
 		return
 	}
 
-	if len(content) > 1900 {
-		content = content[:1900] + "\n... (truncated)"
-	}
-
-	msg := "```\n" + content + "\n```"
-	_, err = t.session.ChannelMessageSend(t.channelID, msg)
-	if err != nil {
-		log.Printf("[keel] %s: discord send error: %v", t.agentName, err)
-	}
-
 	t.sendStatus(content)
 }
 
@@ -145,8 +135,6 @@ func (t *LogTailer) checkGoalsEmpty(goalsPath string) {
 		return
 	}
 	if len(strings.TrimSpace(string(data))) == 0 {
-		_, _ = t.session.ChannelMessageSend(t.channelID,
-			"All goals complete for **"+t.agentName+"**.")
 		t.sendStatus("All goals complete.")
 	}
 }

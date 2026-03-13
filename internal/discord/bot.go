@@ -132,6 +132,7 @@ func (b *Bot) sessionHandlers(agentName, channelID string) (onOutput func(loop.S
 	var tools []string
 	var lastCost float64
 	var lastDurationMs int64
+	var lastResultText string
 
 	onLifecycle = func(event string) {
 		mu.Lock()
@@ -143,6 +144,7 @@ func (b *Bot) sessionHandlers(agentName, channelID string) (onOutput func(loop.S
 			tools = nil
 			lastCost = 0
 			lastDurationMs = 0
+			lastResultText = ""
 			_ = progress.Send(fmt.Sprintf("**%s** — Running...", agentName))
 			b.sendStatus(agentName, "Session started")
 
@@ -173,6 +175,10 @@ func (b *Bot) sessionHandlers(agentName, channelID string) (onOutput func(loop.S
 				b.session.ChannelMessageSend(channelID, fmt.Sprintf("**%s** — No goals remaining. Loop stopped.", agentName))
 			}
 			b.sendStatus(agentName, "No goals — loop stopped")
+			if lastResultText != "" {
+				report := fmt.Sprintf("**%s — Report**\n%s", agentName, lastResultText)
+				sendChunked(b.session, channelID, report)
+			}
 
 		case "sleeping":
 			if progress != nil {
@@ -197,6 +203,22 @@ func (b *Bot) sessionHandlers(agentName, channelID string) (onOutput func(loop.S
 				b.session.ChannelMessageSend(channelID, fmt.Sprintf("**%s** — Agent exited. Loop stopped.", agentName))
 			}
 			b.sendStatus(agentName, "Agent requested exit — loop stopped")
+			if lastResultText != "" {
+				report := fmt.Sprintf("**%s — Report**\n%s", agentName, lastResultText)
+				sendChunked(b.session, channelID, report)
+			}
+
+		case "stale":
+			if progress != nil {
+				progress.Flush()
+				progress.Finalize(fmt.Sprintf("**%s** — No progress detected. Loop stopped.", agentName))
+				progress = nil
+			}
+			b.sendStatus(agentName, "Stale — loop stopped")
+			if lastResultText != "" {
+				report := fmt.Sprintf("**%s — Report**\n%s", agentName, lastResultText)
+				sendChunked(b.session, channelID, report)
+			}
 
 		case "too_many_errors":
 			if progress != nil {
@@ -265,6 +287,7 @@ func (b *Bot) sessionHandlers(agentName, channelID string) (onOutput func(loop.S
 		case loop.EventResult:
 			lastCost = ev.Cost
 			lastDurationMs = ev.DurationMs
+			lastResultText = ev.Text
 		}
 	}
 
@@ -383,11 +406,16 @@ func (b *Bot) checkSchedules() {
 			if schedule.HasUrgent(fired) {
 				log.Printf("[keel] scheduler: urgent entry for %s — interrupting current session", name)
 				b.sendStatus(name, "Urgent schedule — interrupting session")
-				b.loopMgr.Stop(name)
-				onOutput, onLifecycle := b.sessionHandlers(name, ch.ChannelID)
-				if err := b.loopMgr.Start(name, ch.AgentDir, loop.DefaultCommandBuilder, b.sleepBetween, b.archiveEvery, onOutput, onLifecycle); err != nil {
-					log.Printf("[keel] scheduler: error restarting %s: %v", name, err)
-				}
+				agentDir := ch.AgentDir
+				channelID := ch.ChannelID
+				agentName := name
+				go func() {
+					b.loopMgr.Stop(agentName)
+					onOutput, onLifecycle := b.sessionHandlers(agentName, channelID)
+					if err := b.loopMgr.Start(agentName, agentDir, loop.DefaultCommandBuilder, b.sleepBetween, b.archiveEvery, onOutput, onLifecycle); err != nil {
+						log.Printf("[keel] scheduler: error restarting %s: %v", agentName, err)
+					}
+				}()
 			} else {
 				b.loopMgr.Nudge(name)
 			}
