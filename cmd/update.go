@@ -10,8 +10,6 @@ import (
 	"runtime"
 
 	"github.com/spf13/cobra"
-
-	"github.com/SeanoChang/keel/internal/migrate"
 )
 
 // Version is set at build time via -ldflags "-X github.com/SeanoChang/keel/cmd.Version=<tag>"
@@ -31,25 +29,12 @@ type githubAsset struct {
 
 var updateCmd = &cobra.Command{
 	Use:   "update",
-	Short: "Update keel to the latest GitHub release and migrate workspaces",
+	Short: "Update keel to the latest GitHub release",
 	RunE:  runUpdate,
 }
 
-var updateMigrateOnly bool
-
 func runUpdate(cmd *cobra.Command, args []string) error {
-	if !updateMigrateOnly {
-		if err := selfUpdate(); err != nil {
-			return err
-		}
-	}
-
-	fmt.Println("Running workspace migrations...")
-	if err := migrate.ScanAndMigrate(""); err != nil {
-		return fmt.Errorf("migrate: %w", err)
-	}
-	fmt.Println("Migrations complete.")
-	return nil
+	return selfUpdate()
 }
 
 func selfUpdate() error {

@@ -31,7 +31,6 @@ func init() {
 	rootCmd.AddCommand(statusCmd)
 
 	// update
-	updateCmd.Flags().BoolVar(&updateMigrateOnly, "migrate-only", false, "Run workspace migrations without downloading a new binary")
 	rootCmd.AddCommand(updateCmd)
 
 	// schedule

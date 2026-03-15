@@ -76,15 +76,14 @@ func (b *Bot) cmdStatus(name string, ch config.ChannelConfig) string {
 }
 
 func (b *Bot) cmdGoals(ch config.ChannelConfig) string {
+	if !workspace.HasGoals(ch.AgentDir) {
+		return "No goals."
+	}
 	goals, err := workspace.ReadGoals(ch.AgentDir)
 	if err != nil {
 		return fmt.Sprintf("Error reading GOALS.md: %v", err)
 	}
-	goals = strings.TrimSpace(goals)
-	if goals == "" {
-		return "GOALS.md is empty."
-	}
-	return fmt.Sprintf("```\n%s\n```", goals)
+	return fmt.Sprintf("```\n%s\n```", strings.TrimSpace(goals))
 }
 
 func (b *Bot) cmdLog(ch config.ChannelConfig, n int) string {
@@ -224,10 +223,17 @@ func (b *Bot) cmdAsk(s *discordgo.Session, m *discordgo.MessageCreate, agentName
 }
 
 func (b *Bot) cmdClear(ch config.ChannelConfig, name string) string {
+	wasRunning := b.loopMgr.IsRunning(name)
+	if wasRunning {
+		b.loopMgr.Stop(name)
+	}
 	if err := workspace.ClearGoals(ch.AgentDir); err != nil {
 		return fmt.Sprintf("Error clearing GOALS.md: %v", err)
 	}
-	return fmt.Sprintf("GOALS.md cleared for **%s**. Loop will stop after current session.", name)
+	if wasRunning {
+		return fmt.Sprintf("GOALS.md cleared for **%s**. Loop stopped.", name)
+	}
+	return fmt.Sprintf("GOALS.md cleared for **%s**.", name)
 }
 
 func (b *Bot) cmdSchedule(ch config.ChannelConfig, args string) string {

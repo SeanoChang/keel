@@ -36,7 +36,7 @@ go build -o keel .
 keel update
 ```
 
-Downloads the latest release for your platform and migrates agent workspaces.
+Downloads the latest release for your platform.
 
 ## Quick Start
 
@@ -62,7 +62,7 @@ Keel loops: read goals → run `claude --agent` → sleep → repeat, until `GOA
 | `keel run <agent>` | Run a single agent loop (CLI, no Discord) |
 | `keel serve` | Start the Discord bot with channel-per-agent mapping |
 | `keel status <agent>` | Show goals, memory token count, log tail |
-| `keel update` | Pull latest binary from GitHub and run workspace migrations |
+| `keel update` | Pull latest binary from GitHub |
 | `keel --version` | Print the current keel version |
 
 ### `keel run`
@@ -91,12 +91,10 @@ Each Discord channel maps to one agent. Messages become goals; agent logs stream
 ### `keel update`
 
 ```
-keel update [--migrate-only]
+keel update
 ```
 
-- `--migrate-only` — Skip binary download, run workspace migrations only
-
-Migrations ensure all agent dirs under `~/.ark/agents-home/` have required files (`GOALS.md`, `MEMORY.md`, `log.md`, `PROGRAM.md`).
+Downloads the latest binary from GitHub releases and replaces the current one.
 
 ## Discord Setup
 
@@ -148,7 +146,7 @@ Type these in any mapped channel:
 | `!memory` | Show MEMORY.md token count |
 | `!start` | Start the agent loop |
 | `!stop` | Stop the agent loop |
-| `!clear` | Clear GOALS.md (loop stops after current session) |
+| `!clear` | Stop the loop and clear GOALS.md |
 
 Any non-command message is appended to `GOALS.md` as a timestamped goal, and the agent loop starts automatically if it isn't already running.
 
@@ -189,7 +187,6 @@ Discord message
 | `internal/loop/` | AgentLoop (outer while-loop) + Manager (goroutine-per-agent) |
 | `internal/config/` | TOML config parsing, channel-to-agent resolution |
 | `internal/discord/` | Discord bot, `!` commands, fsnotify log tailing |
-| `internal/migrate/` | Idempotent workspace migrations |
 
 ## Releasing
 

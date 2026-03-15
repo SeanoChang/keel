@@ -13,6 +13,8 @@ const DefaultProgram = "Read GOALS.md. Work on the highest-priority goal. When c
 // keep unexported alias so existing internal calls compile unchanged
 const defaultProgram = DefaultProgram
 
+const goalsBoilerplate = "# Goals\n\n<!-- Add goals here. Agent removes completed goals. -->\n"
+
 func ReadGoals(dir string) (string, error) {
 	data, err := os.ReadFile(filepath.Join(dir, "GOALS.md"))
 	if err != nil {
@@ -57,6 +59,21 @@ func stripGoalsBoilerplate(s string) string {
 	return strings.Join(lines, "\n")
 }
 
+// HasGoalHeaders checks if GOALS.md contains structured goal headers
+// (## [timestamp] from/scheduled:) as opposed to agent-written status text.
+func HasGoalHeaders(dir string) bool {
+	data, err := os.ReadFile(filepath.Join(dir, "GOALS.md"))
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "## [") {
+			return true
+		}
+	}
+	return false
+}
+
 func AppendGoal(dir, username, message string) error {
 	f, err := os.OpenFile(filepath.Join(dir, "GOALS.md"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
@@ -69,7 +86,7 @@ func AppendGoal(dir, username, message string) error {
 }
 
 func ClearGoals(dir string) error {
-	return os.WriteFile(filepath.Join(dir, "GOALS.md"), []byte(""), 0644)
+	return os.WriteFile(filepath.Join(dir, "GOALS.md"), []byte(goalsBoilerplate), 0644)
 }
 
 func ReadProgram(dir string) (string, error) {

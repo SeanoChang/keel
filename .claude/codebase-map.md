@@ -18,7 +18,7 @@ keel/
 │   ├── run.go                  # `keel run <agent>` — single agent loop
 │   ├── serve.go                # `keel serve` — Discord bot + agent loops
 │   ├── status.go               # `keel status <agent>` — show agent state
-│   └── update.go               # `keel update` — self-update binary + migrations
+│   └── update.go               # `keel update` — self-update binary
 ├── internal/
 │   ├── agent/
 │   │   └── agent.go            # Agent struct (name + dir), HasGoals()
@@ -33,8 +33,6 @@ keel/
 │   │   ├── loop.go             # AgentLoop — run claude sessions in a loop
 │   │   ├── manager.go          # Manager — goroutine-per-agent lifecycle
 │   │   └── oneshot.go          # RunOneShot / RunOneShotStreaming — single claude call
-│   ├── migrate/
-│   │   └── migrate.go          # Workspace migrations (ensure required files exist)
 │   └── workspace/
 │       └── workspace.go        # File I/O for GOALS.md, PROGRAM.md, MEMORY.md, log.md
 ├── config/
@@ -62,7 +60,7 @@ keel/
 | `run.go` | `keel run <agent>` — resolve dir, create AgentLoop, run until goals empty |
 | `serve.go` | `keel serve` — load TOML config, create Discord Bot, block on signal |
 | `status.go` | `keel status <agent>` — print goals, memory tokens, log tail |
-| `update.go` | `keel update` — self-update from GitHub releases + workspace migrations |
+| `update.go` | `keel update` — self-update from GitHub releases |
 
 ### `internal/workspace/`
 | File | Exports / Responsibility |
@@ -94,19 +92,12 @@ keel/
 | `progress.go` | `ProgressMessage` — rate-limited (2s) Discord message editing for live tool activity |
 | `tail.go` | `LogTailer` — fsnotify on agent dir, sends new log.md lines + goals-complete notifications to Discord |
 
-### `internal/migrate/`
-| File | Exports / Responsibility |
-|------|--------------------------|
-| `migrate.go` | `ScanAndMigrate`, `AgentDir` — ensure GOALS.md, MEMORY.md, log.md, PROGRAM.md exist with defaults |
-
 ## Dependency Graph (simplified)
 ```
 main.go → cmd/root
   cmd/run    → agent, loop, workspace
   cmd/serve  → config, discord
   cmd/status → agent, workspace
-  cmd/update → migrate
-
 discord/bot      → config, loop, workspace
 discord/commands → config, loop, workspace
 discord/tail     → (fsnotify, discordgo)
@@ -115,6 +106,4 @@ discord/progress → (discordgo)
 loop/loop    → workspace
 loop/manager → loop
 loop/oneshot → (os/exec)
-
-migrate → workspace
 ```
