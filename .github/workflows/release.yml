@@ -28,7 +28,7 @@ jobs:
           GOARCH: arm64
           CGO_ENABLED: "0"
           VERSION: ${{ github.ref_name }}
-        run: go build -ldflags="-s -w -X github.com/SeanoChang/keel/cmd.Version=$VERSION" -o keel-darwin-arm64 .
+        run: go build -ldflags="-s -w -X github.com/SeanoChang/keel/internal/update.Version=$VERSION" -o keel-darwin-arm64 .
 
       - name: Build linux/amd64
         env:
@@ -36,7 +36,7 @@ jobs:
           GOARCH: amd64
           CGO_ENABLED: "0"
           VERSION: ${{ github.ref_name }}
-        run: go build -ldflags="-s -w -X github.com/SeanoChang/keel/cmd.Version=$VERSION" -o keel-linux-amd64 .
+        run: go build -ldflags="-s -w -X github.com/SeanoChang/keel/internal/update.Version=$VERSION" -o keel-linux-amd64 .
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2

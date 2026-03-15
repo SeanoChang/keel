@@ -5,7 +5,6 @@ token_env = "DISCORD_BOT_TOKEN"    # env var name containing the bot token
 guild_id = "YOUR_GUILD_ID"
 status_channel_id = ""              # optional: broadcast channel for all agents
 admin_users = []                    # Discord user IDs allowed to interact (empty = everyone)
-source_dir = ""                     # keel source directory for !keel-update (e.g. "/Users/you/keel")
 plist_label = ""                    # launchd label for restart (e.g. "com.keel.serve")
 
 [channels.noah]

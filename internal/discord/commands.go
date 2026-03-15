@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"os/user"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -18,6 +17,7 @@ import (
 	"github.com/SeanoChang/keel/internal/config"
 	"github.com/SeanoChang/keel/internal/loop"
 	"github.com/SeanoChang/keel/internal/schedule"
+	"github.com/SeanoChang/keel/internal/update"
 	"github.com/SeanoChang/keel/internal/workspace"
 )
 
@@ -149,7 +149,7 @@ func cmdHelp() string {
 		"`!stop` — stop the agent loop\n" +
 		"`!schedule` — show scheduled goals\n" +
 		"`!clear` — clear all goals\n" +
-		"`!keel-update` — pull, rebuild, and restart keel\n\n" +
+		"`!keel-update` — update keel to latest release and restart\n\n" +
 		"Any other message is added as a goal."
 }
 
@@ -273,56 +273,30 @@ func (b *Bot) cmdSchedule(ch config.ChannelConfig, args string) string {
 }
 
 func (b *Bot) cmdKeelUpdate(s *discordgo.Session, m *discordgo.MessageCreate) {
-	srcDir := b.cfg.Bot.SourceDir
-	if srcDir == "" {
-		b.reply(s, m, "Error: `source_dir` not configured in bot config.")
+	result, err := update.Run(update.Version, func(msg string) {
+		b.reply(s, m, msg)
+	})
+	if err != nil {
+		b.reply(s, m, fmt.Sprintf("Update failed: %v", err))
 		return
 	}
-
-	b.reply(s, m, "Pulling latest changes...")
-
-	// git pull
-	pull := exec.Command("git", "-C", srcDir, "pull")
-	pullOut, err := pull.CombinedOutput()
-	if err != nil {
-		b.reply(s, m, fmt.Sprintf("git pull failed:\n```\n%s\n```", string(pullOut)))
-		return
-	}
-
-	b.reply(s, m, fmt.Sprintf("```\n%s```\nBuilding...", strings.TrimSpace(string(pullOut))))
-
-	// go build — resolve symlinks so we overwrite the real binary
-	binPath, err := os.Executable()
-	if err != nil {
-		b.reply(s, m, fmt.Sprintf("Error finding executable path: %v", err))
-		return
-	}
-	if resolved, err := filepath.EvalSymlinks(binPath); err == nil {
-		binPath = resolved
-	}
-	build := exec.Command("go", "build", "-o", binPath, ".")
-	build.Dir = srcDir
-	buildOut, err := build.CombinedOutput()
-	if err != nil {
-		b.reply(s, m, fmt.Sprintf("go build failed:\n```\n%s\n```", string(buildOut)))
+	if result.AlreadyCurrent {
+		b.reply(s, m, fmt.Sprintf("Already on latest version (%s).", result.CurrentVersion))
 		return
 	}
 
 	label := b.cfg.Bot.PlistLabel
 	if label == "" {
-		b.reply(s, m, "Build complete. No `plist_label` configured — exiting (manual restart required).")
-		log.Printf("[keel] keel-update: build complete, exiting for manual restart")
+		b.reply(s, m, fmt.Sprintf("Updated to %s. No `plist_label` configured — exiting (manual restart required).", result.NewVersion))
+		log.Printf("[keel] keel-update: updated to %s, exiting for manual restart", result.NewVersion)
 		time.Sleep(500 * time.Millisecond)
 		os.Exit(0)
 		return
 	}
 
-	b.reply(s, m, "Build complete. Restarting via launchctl...")
-	log.Printf("[keel] keel-update: build complete, restarting %s", label)
+	b.reply(s, m, fmt.Sprintf("Updated to %s. Restarting via launchctl...", result.NewVersion))
+	log.Printf("[keel] keel-update: updated to %s, restarting %s", result.NewVersion, label)
 
-	// kickstart -k kills the running instance and starts a new one.
-	// launchd handles the restart independently, so it works even though
-	// the target process is us.
 	u, err := user.Current()
 	if err != nil {
 		b.reply(s, m, fmt.Sprintf("Error getting current user: %v", err))

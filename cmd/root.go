@@ -6,12 +6,14 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+
+	"github.com/SeanoChang/keel/internal/update"
 )
 
 var rootCmd = &cobra.Command{
 	Use:     "keel",
 	Short:   "Agent loop manager and Discord bridge",
-	Version: Version,
+	Version: update.Version,
 }
 
 func init() {
