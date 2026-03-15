@@ -11,7 +11,9 @@ type BotConfig struct {
 	TokenEnv        string   `toml:"token_env"`
 	GuildID         string   `toml:"guild_id"`
 	StatusChannelID string   `toml:"status_channel_id"`
-	AdminUsers      []string `toml:"admin_users"` // Discord user IDs allowed to interact
+	AdminUsers      []string `toml:"admin_users"`   // Discord user IDs allowed to interact
+	SourceDir       string   `toml:"source_dir"`    // keel source directory for !keel-update
+	PlistLabel      string   `toml:"plist_label"`   // launchd label for restart (e.g. "com.keel.serve")
 }
 
 type ChannelConfig struct {

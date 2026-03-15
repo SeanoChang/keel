@@ -4,9 +4,14 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
+	"os/exec"
+	"os/user"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/bwmarrin/discordgo"
 
@@ -51,6 +56,9 @@ func (b *Bot) handleCommand(s *discordgo.Session, m *discordgo.MessageCreate, ag
 		response = b.cmdClear(ch, agentName)
 	case "schedule":
 		response = b.cmdSchedule(ch, args)
+	case "keel-update":
+		go b.cmdKeelUpdate(s, m)
+		return
 	case "help":
 		response = cmdHelp()
 	default:
@@ -121,7 +129,7 @@ func (b *Bot) cmdStart(name string, ch config.ChannelConfig) string {
 	if !workspace.HasGoals(ch.AgentDir) {
 		return fmt.Sprintf("Agent **%s** has no goals. Send a message first.", name)
 	}
-	onOutput, onLifecycle := b.sessionHandlers(name, ch.ChannelID)
+	onOutput, onLifecycle := b.sessionHandlers(name, ch.ChannelID, ch.AgentDir)
 	err := b.loopMgr.Start(name, ch.AgentDir, loop.DefaultCommandBuilder, b.sleepBetween, b.archiveEvery, onOutput, onLifecycle)
 	if err != nil {
 		return fmt.Sprintf("Error starting **%s**: %v", name, err)
@@ -140,7 +148,8 @@ func cmdHelp() string {
 		"`!start` — start the agent loop\n" +
 		"`!stop` — stop the agent loop\n" +
 		"`!schedule` — show scheduled goals\n" +
-		"`!clear` — clear all goals\n\n" +
+		"`!clear` — clear all goals\n" +
+		"`!keel-update` — pull, rebuild, and restart keel\n\n" +
 		"Any other message is added as a goal."
 }
 
@@ -261,4 +270,69 @@ func (b *Bot) cmdSchedule(ch config.ChannelConfig, args string) string {
 		sb.WriteString(fmt.Sprintf("`[%s]` **%s** @ %s\n%s\n\n", kind, e.Name, when, preview))
 	}
 	return sb.String()
+}
+
+func (b *Bot) cmdKeelUpdate(s *discordgo.Session, m *discordgo.MessageCreate) {
+	srcDir := b.cfg.Bot.SourceDir
+	if srcDir == "" {
+		b.reply(s, m, "Error: `source_dir` not configured in bot config.")
+		return
+	}
+
+	b.reply(s, m, "Pulling latest changes...")
+
+	// git pull
+	pull := exec.Command("git", "-C", srcDir, "pull")
+	pullOut, err := pull.CombinedOutput()
+	if err != nil {
+		b.reply(s, m, fmt.Sprintf("git pull failed:\n```\n%s\n```", string(pullOut)))
+		return
+	}
+
+	b.reply(s, m, fmt.Sprintf("```\n%s```\nBuilding...", strings.TrimSpace(string(pullOut))))
+
+	// go build — resolve symlinks so we overwrite the real binary
+	binPath, err := os.Executable()
+	if err != nil {
+		b.reply(s, m, fmt.Sprintf("Error finding executable path: %v", err))
+		return
+	}
+	if resolved, err := filepath.EvalSymlinks(binPath); err == nil {
+		binPath = resolved
+	}
+	build := exec.Command("go", "build", "-o", binPath, ".")
+	build.Dir = srcDir
+	buildOut, err := build.CombinedOutput()
+	if err != nil {
+		b.reply(s, m, fmt.Sprintf("go build failed:\n```\n%s\n```", string(buildOut)))
+		return
+	}
+
+	label := b.cfg.Bot.PlistLabel
+	if label == "" {
+		b.reply(s, m, "Build complete. No `plist_label` configured — exiting (manual restart required).")
+		log.Printf("[keel] keel-update: build complete, exiting for manual restart")
+		time.Sleep(500 * time.Millisecond)
+		os.Exit(0)
+		return
+	}
+
+	b.reply(s, m, "Build complete. Restarting via launchctl...")
+	log.Printf("[keel] keel-update: build complete, restarting %s", label)
+
+	// kickstart -k kills the running instance and starts a new one.
+	// launchd handles the restart independently, so it works even though
+	// the target process is us.
+	u, err := user.Current()
+	if err != nil {
+		b.reply(s, m, fmt.Sprintf("Error getting current user: %v", err))
+		return
+	}
+	target := fmt.Sprintf("gui/%s/%s", u.Uid, label)
+
+	time.Sleep(500 * time.Millisecond)
+	kick := exec.Command("launchctl", "kickstart", "-k", target)
+	if out, err := kick.CombinedOutput(); err != nil {
+		log.Printf("[keel] keel-update: kickstart failed: %s — %v", string(out), err)
+	}
 }

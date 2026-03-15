@@ -155,6 +155,49 @@ func TestClearGoals(t *testing.T) {
 	}
 }
 
+func TestReadDeliver(t *testing.T) {
+	dir := t.TempDir()
+	content := "# Crude Oil Analysis\n\nWTI is trading at $68.50...\n"
+	os.WriteFile(filepath.Join(dir, "DELIVER.md"), []byte(content), 0644)
+
+	got, err := ReadDeliver(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != content {
+		t.Errorf("expected %q, got %q", content, got)
+	}
+}
+
+func TestReadDeliverMissing(t *testing.T) {
+	dir := t.TempDir()
+	got, err := ReadDeliver(dir)
+	if err != nil {
+		t.Fatalf("expected no error for missing file, got %v", err)
+	}
+	if got != "" {
+		t.Errorf("expected empty string, got %q", got)
+	}
+}
+
+func TestClearDeliver(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "DELIVER.md")
+	os.WriteFile(path, []byte("some content"), 0644)
+
+	if err := ClearDeliver(dir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Error("expected DELIVER.md to be removed")
+	}
+
+	// Clearing when already absent should not error
+	if err := ClearDeliver(dir); err != nil {
+		t.Errorf("clearing absent DELIVER.md should not error: %v", err)
+	}
+}
+
 func TestAppendScheduledGoal(t *testing.T) {
 	dir := setupWorkspace(t)
 	err := AppendScheduledGoal(dir, "check-pce", "Check January PCE release")

@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-const DefaultProgram = "Read GOALS.md. Work on the highest-priority goal. When complete, remove it from GOALS.md. Log what you accomplished to log.md. Update MEMORY.md with any useful context. When no goals remain, write a comprehensive report of everything you accomplished as your final response, then create an empty file called .exit to signal you are done."
+const DefaultProgram = "Read GOALS.md. Work on the highest-priority goal. When complete, remove it from GOALS.md. Log what you accomplished to log.md. Update MEMORY.md with any useful context. If you produce a deliverable (report, analysis, research, etc.), write its full content to DELIVER.md — this file will be sent to the requesting channel. Do not assume your text responses reach the user directly. When no goals remain, write a comprehensive report of everything you accomplished as your final response, then create an empty file called .exit to signal you are done."
 
 // keep unexported alias so existing internal calls compile unchanged
 const defaultProgram = DefaultProgram
@@ -159,6 +159,27 @@ func ClearExitSignal(dir string) error {
 	return err
 }
 
+// ReadDeliver reads the DELIVER.md file. Returns "" if not found.
+func ReadDeliver(dir string) (string, error) {
+	data, err := os.ReadFile(filepath.Join(dir, "DELIVER.md"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", err
+	}
+	return string(data), nil
+}
+
+// ClearDeliver removes DELIVER.md after its contents have been relayed.
+func ClearDeliver(dir string) error {
+	err := os.Remove(filepath.Join(dir, "DELIVER.md"))
+	if os.IsNotExist(err) {
+		return nil
+	}
+	return err
+}
+
 func LogSize(dir string) (int64, error) {
 	info, err := os.Stat(filepath.Join(dir, "log.md"))
 	if err != nil {
@@ -178,6 +199,6 @@ func AppendScheduledGoal(dir, name, content string) error {
 	}
 	defer f.Close()
 	ts := time.Now().Format("2006-01-02 15:04")
-	_, err = fmt.Fprintf(f, "\n## [%s] scheduled: %s\n%s\n\n> Scheduled task. When complete, remove this goal. If no other goals remain, write a comprehensive report of everything you accomplished as your final response, then create .exit to signal you are done.\n", ts, name, content)
+	_, err = fmt.Fprintf(f, "\n## [%s] scheduled: %s\n%s\n\n> Scheduled task. When complete, remove this goal. If you produce a deliverable, write it to DELIVER.md. If no other goals remain, write a comprehensive report of everything you accomplished as your final response, then create .exit to signal you are done.\n", ts, name, content)
 	return err
 }

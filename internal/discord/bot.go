@@ -116,7 +116,7 @@ func (b *Bot) onMessageCreate(s *discordgo.Session, m *discordgo.MessageCreate) 
 	if b.loopMgr.IsRunning(agentName) {
 		b.loopMgr.Nudge(agentName)
 	} else {
-		onOutput, onLifecycle := b.sessionHandlers(agentName, m.ChannelID)
+		onOutput, onLifecycle := b.sessionHandlers(agentName, ch.ChannelID, ch.AgentDir)
 		err := b.loopMgr.Start(agentName, ch.AgentDir, loop.DefaultCommandBuilder, b.sleepBetween, b.archiveEvery, onOutput, onLifecycle)
 		if err != nil {
 			log.Printf("[keel] error starting loop for %s: %v", agentName, err)
@@ -126,7 +126,7 @@ func (b *Bot) onMessageCreate(s *discordgo.Session, m *discordgo.MessageCreate) 
 
 // sessionHandlers returns an (onOutput, onLifecycle) pair that manages a single
 // ProgressMessage per session — edited in-place as claude streams tool activity.
-func (b *Bot) sessionHandlers(agentName, channelID string) (onOutput func(loop.StreamEvent), onLifecycle func(string)) {
+func (b *Bot) sessionHandlers(agentName, channelID, agentDir string) (onOutput func(loop.StreamEvent), onLifecycle func(string)) {
 	var progress *ProgressMessage
 	var mu sync.Mutex
 	var tools []string
@@ -179,6 +179,7 @@ func (b *Bot) sessionHandlers(agentName, channelID string) (onOutput func(loop.S
 				report := fmt.Sprintf("**%s — Report**\n%s", agentName, lastResultText)
 				sendChunked(b.session, channelID, report)
 			}
+			b.sendDelivery(b.session, channelID, agentName, agentDir)
 
 		case "sleeping":
 			if progress != nil {
@@ -207,6 +208,7 @@ func (b *Bot) sessionHandlers(agentName, channelID string) (onOutput func(loop.S
 				report := fmt.Sprintf("**%s — Report**\n%s", agentName, lastResultText)
 				sendChunked(b.session, channelID, report)
 			}
+			b.sendDelivery(b.session, channelID, agentName, agentDir)
 
 		case "stale":
 			if progress != nil {
@@ -219,6 +221,7 @@ func (b *Bot) sessionHandlers(agentName, channelID string) (onOutput func(loop.S
 				report := fmt.Sprintf("**%s — Report**\n%s", agentName, lastResultText)
 				sendChunked(b.session, channelID, report)
 			}
+			b.sendDelivery(b.session, channelID, agentName, agentDir)
 
 		case "too_many_errors":
 			if progress != nil {
@@ -227,6 +230,7 @@ func (b *Bot) sessionHandlers(agentName, channelID string) (onOutput func(loop.S
 				progress = nil
 			}
 			b.sendStatus(agentName, "Too many errors — loop stopped")
+			b.sendDelivery(b.session, channelID, agentName, agentDir)
 
 		default:
 			if strings.HasPrefix(event, "error:") {
@@ -336,6 +340,25 @@ func (b *Bot) sendStatus(agentName, event string) {
 	}
 }
 
+// sendDelivery reads DELIVER.md from the agent directory, removes it
+// immediately to avoid TOCTOU races, then sends contents to Discord.
+func (b *Bot) sendDelivery(s *discordgo.Session, channelID, agentName, agentDir string) {
+	content, err := workspace.ReadDeliver(agentDir)
+	if err != nil {
+		log.Printf("[keel] %s: error reading DELIVER.md: %v", agentName, err)
+		return
+	}
+	if content == "" {
+		return
+	}
+	// Remove immediately before posting to prevent a new loop from losing a future delivery
+	if err := workspace.ClearDeliver(agentDir); err != nil {
+		log.Printf("[keel] %s: error clearing DELIVER.md: %v", agentName, err)
+	}
+	header := fmt.Sprintf("**%s — Delivery**\n", agentName)
+	sendChunked(s, channelID, header+content)
+}
+
 func (b *Bot) reply(s *discordgo.Session, m *discordgo.MessageCreate, msg string) {
 	if len(msg) <= 1900 {
 		if _, err := s.ChannelMessageSend(m.ChannelID, msg); err != nil {
@@ -411,7 +434,7 @@ func (b *Bot) checkSchedules() {
 				agentName := name
 				go func() {
 					b.loopMgr.Stop(agentName)
-					onOutput, onLifecycle := b.sessionHandlers(agentName, channelID)
+					onOutput, onLifecycle := b.sessionHandlers(agentName, channelID, agentDir)
 					if err := b.loopMgr.Start(agentName, agentDir, loop.DefaultCommandBuilder, b.sleepBetween, b.archiveEvery, onOutput, onLifecycle); err != nil {
 						log.Printf("[keel] scheduler: error restarting %s: %v", agentName, err)
 					}
@@ -420,7 +443,7 @@ func (b *Bot) checkSchedules() {
 				b.loopMgr.Nudge(name)
 			}
 		} else {
-			onOutput, onLifecycle := b.sessionHandlers(name, ch.ChannelID)
+			onOutput, onLifecycle := b.sessionHandlers(name, ch.ChannelID, ch.AgentDir)
 			if err := b.loopMgr.Start(name, ch.AgentDir, loop.DefaultCommandBuilder, b.sleepBetween, b.archiveEvery, onOutput, onLifecycle); err != nil {
 				log.Printf("[keel] scheduler: error starting %s: %v", name, err)
 			}
