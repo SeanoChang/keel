@@ -31,14 +31,18 @@ Single Go binary. Filesystem is the protocol — no MCP, no custom IPC.
 - `internal/workspace/` — file I/O helpers for agent directories (GOALS.md, MEMORY.md, log.md, PROGRAM.md)
 - `internal/agent/` — Agent struct wrapping a workspace directory
 - `internal/loop/` — AgentLoop (runs `claude --agent`) + Manager (goroutine-per-agent)
-- `internal/config/` — TOML config for Discord channel-to-agent mappings
+- `internal/config/` — TOML config for Discord channel-to-agent mappings and managed binary definitions
 - `internal/schedule/` — schedule scanning, cron matching, goal injection
 - `internal/discord/` — Discord bot, ! commands, log.md tailing via fsnotify, scheduler goroutine
 - `cmd/` — Cobra CLI commands (run, serve, status, schedule)
 
 ## Config
 
-Copy `config/discord.example.toml` to `config/discord.toml` and fill in your Discord bot token env var, guild ID, and channel-to-agent mappings.
+Copy `config/discord.example.toml` to `config/discord.toml` and fill in your Discord bot token env var, guild ID, channel-to-agent mappings, and optional managed binary definitions.
+
+### Managed Binaries
+
+Add `[managed_binaries.<name>]` sections to run external update commands via Discord (`!<name>-update`). Each entry needs `update_cmd` (command array, e.g. `["nark", "update"]`).
 
 ## Agent Directory Layout
 
@@ -63,7 +67,7 @@ Agents can self-schedule future goals via filesystem:
 ```
 
 CLI: `keel schedule add <agent> <time> <name> <content>`
-Discord: `!schedule` to list upcoming.
+Discord: `!schedule` to list upcoming, `!update` to update keel, `!<name>-update` to update managed binaries.
 
 One-shot dirs are deleted after firing. Cron dirs persist with `.last-fired` guard.
 A 60-second ticker goroutine in `keel serve` scans all agent schedule dirs and fires due entries.

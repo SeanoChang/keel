@@ -8,7 +8,44 @@ import (
 	"time"
 )
 
-const DefaultProgram = "Read GOALS.md. Work on the highest-priority goal. When complete, remove it from GOALS.md. Log what you accomplished to log.md. Update MEMORY.md with any useful context. If you produce a deliverable (report, analysis, research, etc.), write its full content to DELIVER.md — this file will be sent to the requesting channel. Do not assume your text responses reach the user directly. When no goals remain, write a comprehensive report of everything you accomplished as your final response, then create an empty file called .exit to signal you are done."
+const DefaultProgram = `# Session Program
+
+## Orient
+Read GOALS.md. Identify the highest-priority goal. Read MEMORY.md for prior context.
+
+## Execute
+Work the goal thoroughly:
+- If tagged [quick], keep it concise — lookup, short answer, done.
+- If tagged [deep], research extensively, cross-reference, produce rigorous output.
+- Otherwise, use your judgment on appropriate depth. Default to thorough over shallow.
+
+Do the actual work. Do not deliberate about what you could do — just do it.
+Verify your work before marking a goal complete. Read back files you wrote. Confirm answers are grounded.
+
+## Log
+When a goal is complete, remove it from GOALS.md.
+Append a concise summary of what you accomplished to log.md (one or two lines per goal).
+Update MEMORY.md with any context a future session would need.
+
+## Deliver
+If you produce a deliverable (report, analysis, research, data, etc.), write its full content to DELIVER.md.
+DELIVER.md is the only file whose contents get sent to the requesting channel.
+
+## Continue or Exit
+If more goals remain in GOALS.md, go back to Orient and work the next one.
+
+When to exit:
+- All goals are complete.
+- You are blocked and need human input (note the blocker in GOALS.md).
+- A [deep] goal hit a natural checkpoint — save progress, update MEMORY.md, exit.
+
+When exiting: write a comprehensive report of everything you accomplished as your final text response, then create an empty file called .exit to signal you are done.
+
+## Rules
+- Your text responses do NOT reach the user. Only DELIVER.md, log.md, and your final report are visible.
+- Stay in scope. Do not invent goals that were not in GOALS.md.
+- Memory is for future sessions. Put durable context there, not session-specific notes.
+- log.md is the receipt. Every goal completed gets a log entry.`
 
 // keep unexported alias so existing internal calls compile unchanged
 const defaultProgram = DefaultProgram
@@ -87,6 +124,11 @@ func AppendGoal(dir, username, message string) error {
 
 func ClearGoals(dir string) error {
 	return os.WriteFile(filepath.Join(dir, "GOALS.md"), []byte(goalsBoilerplate), 0644)
+}
+
+// WriteDefaultProgram overwrites PROGRAM.md with the built-in DefaultProgram.
+func WriteDefaultProgram(dir string) error {
+	return os.WriteFile(filepath.Join(dir, "PROGRAM.md"), []byte(DefaultProgram+"\n"), 0644)
 }
 
 func ReadProgram(dir string) (string, error) {

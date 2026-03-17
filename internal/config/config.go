@@ -20,9 +20,14 @@ type ChannelConfig struct {
 	AgentDir  string `toml:"agent_dir"`
 }
 
+type ManagedBinary struct {
+	UpdateCmd []string `toml:"update_cmd"` // command to run (e.g. ["nark", "update"])
+}
+
 type Config struct {
-	Bot      BotConfig                `toml:"bot"`
-	Channels map[string]ChannelConfig `toml:"channels"`
+	Bot             BotConfig                `toml:"bot"`
+	Channels        map[string]ChannelConfig `toml:"channels"`
+	ManagedBinaries map[string]ManagedBinary `toml:"managed_binaries"`
 }
 
 // ResolveChannel finds a channel config by Discord channel ID.

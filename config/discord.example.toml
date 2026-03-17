@@ -10,3 +10,12 @@ plist_label = ""                    # launchd label for restart (e.g. "com.keel.
 [channels.noah]
 channel_id = "YOUR_CHANNEL_ID"
 agent_dir = "~/.ark/agents-home/noah"
+
+# Managed binaries — each entry adds a !<name>-update Discord command
+# that runs the configured update_cmd.
+#
+# [managed_binaries.nark]
+# update_cmd = ["nark", "update"]
+#
+# [managed_binaries.cubit]
+# update_cmd = ["cubit", "update"]

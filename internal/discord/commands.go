@@ -56,12 +56,19 @@ func (b *Bot) handleCommand(s *discordgo.Session, m *discordgo.MessageCreate, ag
 		response = b.cmdClear(ch, agentName)
 	case "schedule":
 		response = b.cmdSchedule(ch, args)
-	case "keel-update":
+	case "update", "keel-update":
 		go b.cmdKeelUpdate(s, m)
 		return
 	case "help":
 		response = cmdHelp()
 	default:
+		// Check for <name>-update pattern against managed binaries
+		if name, ok := strings.CutSuffix(cmd, "-update"); ok {
+			if _, exists := b.cfg.ManagedBinaries[name]; exists {
+				go b.cmdBinaryUpdate(s, m, name)
+				return
+			}
+		}
 		response = fmt.Sprintf("Unknown command: `!%s`. Try `!help` for a list of commands.", cmd)
 	}
 
@@ -149,7 +156,8 @@ func cmdHelp() string {
 		"`!stop` — stop the agent loop\n" +
 		"`!schedule` — show scheduled goals\n" +
 		"`!clear` — clear all goals\n" +
-		"`!keel-update` — update keel to latest release and restart\n\n" +
+		"`!update` — update keel to latest release and restart\n" +
+		"`!<name>-update` — update a managed binary (e.g. `!nark-update`, `!cubit-update`)\n\n" +
 		"Any other message is added as a goal."
 }
 
@@ -272,6 +280,32 @@ func (b *Bot) cmdSchedule(ch config.ChannelConfig, args string) string {
 	return sb.String()
 }
 
+func (b *Bot) cmdBinaryUpdate(s *discordgo.Session, m *discordgo.MessageCreate, name string) {
+	bin := b.cfg.ManagedBinaries[name]
+	if len(bin.UpdateCmd) == 0 {
+		b.reply(s, m, fmt.Sprintf("No `update_cmd` configured for `%s`.", name))
+		return
+	}
+
+	cmdStr := strings.Join(bin.UpdateCmd, " ")
+	b.reply(s, m, fmt.Sprintf("Running `%s`...", cmdStr))
+	log.Printf("[keel] %s-update: running %s", name, cmdStr)
+
+	cmd := exec.Command(bin.UpdateCmd[0], bin.UpdateCmd[1:]...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		b.reply(s, m, fmt.Sprintf("`%s` failed: %v\n```\n%s\n```", cmdStr, err, string(out)))
+		return
+	}
+
+	output := strings.TrimSpace(string(out))
+	if output != "" {
+		b.reply(s, m, fmt.Sprintf("`%s` done.\n```\n%s\n```", cmdStr, output))
+	} else {
+		b.reply(s, m, fmt.Sprintf("`%s` done.", cmdStr))
+	}
+}
+
 func (b *Bot) cmdKeelUpdate(s *discordgo.Session, m *discordgo.MessageCreate) {
 	result, err := update.Run(update.Version, func(msg string) {
 		b.reply(s, m, msg)
@@ -284,6 +318,17 @@ func (b *Bot) cmdKeelUpdate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		b.reply(s, m, fmt.Sprintf("Already on latest version (%s).", result.CurrentVersion))
 		return
 	}
+
+	// Reload PROGRAM.md for all agents with the updated DefaultProgram.
+	var reloaded int
+	for name, ch := range b.cfg.Channels {
+		if err := workspace.WriteDefaultProgram(ch.AgentDir); err != nil {
+			log.Printf("[keel] keel-update: failed to write PROGRAM.md for %s: %v", name, err)
+		} else {
+			reloaded++
+		}
+	}
+	b.reply(s, m, fmt.Sprintf("Reloaded PROGRAM.md for %d agent(s).", reloaded))
 
 	label := b.cfg.Bot.PlistLabel
 	if label == "" {
