@@ -314,12 +314,7 @@ func (b *Bot) cmdKeelUpdate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		b.reply(s, m, fmt.Sprintf("Update failed: %v", err))
 		return
 	}
-	if result.AlreadyCurrent {
-		b.reply(s, m, fmt.Sprintf("Already on latest version (%s).", result.CurrentVersion))
-		return
-	}
-
-	// Reload PROGRAM.md for all agents with the updated DefaultProgram.
+	// Always reload PROGRAM.md for all agents with the built-in DefaultProgram.
 	var reloaded int
 	for name, ch := range b.cfg.Channels {
 		if err := workspace.WriteDefaultProgram(ch.AgentDir); err != nil {
@@ -329,6 +324,11 @@ func (b *Bot) cmdKeelUpdate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		}
 	}
 	b.reply(s, m, fmt.Sprintf("Reloaded PROGRAM.md for %d agent(s).", reloaded))
+
+	if result.AlreadyCurrent {
+		b.reply(s, m, fmt.Sprintf("Already on latest version (%s).", result.CurrentVersion))
+		return
+	}
 
 	label := b.cfg.Bot.PlistLabel
 	if label == "" {
