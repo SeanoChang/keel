@@ -31,19 +31,26 @@ Update MEMORY.md with any context a future session would need.
 If you produce a deliverable (report, analysis, research, data, etc.), write its full content to DELIVER.md.
 DELIVER.md is the only file whose contents get sent to the requesting channel.
 
+## Schedule
+You can self-schedule future goals by creating files in your schedule/ directory:
+- One-shot: schedule/<ISO-datetime>/<name>.md (e.g. schedule/2026-03-18T09:00/check-report.md)
+- Recurring: schedule/cron-<min>_<hour>_<dom>_<mon>_<dow>/<name>.md (e.g. schedule/cron-0_9_*_*_1-5/morning-brief.md)
+The file content becomes the goal text injected into GOALS.md when the schedule fires.
+One-shot dirs are deleted after firing. Recurring dirs persist.
+Use this when a goal requires follow-up at a specific time, or when you want to set up a periodic task.
+
 ## Continue or Exit
 If more goals remain in GOALS.md, go back to Orient and work the next one.
+Do NOT exit while goals remain — keep working.
 
-When to exit:
-- All goals are complete.
-- You are blocked and need human input (note the blocker in GOALS.md).
-- A [deep] goal hit a natural checkpoint — save progress, update MEMORY.md, exit.
+When all goals are complete: write a comprehensive report of everything you accomplished as your final text response, then create an empty file called .exit to signal you are done.
 
-When exiting: write a comprehensive report of everything you accomplished as your final text response, then create an empty file called .exit to signal you are done.
+If you are blocked on a goal and need human input, note the blocker in GOALS.md and end your session. Do NOT create .exit — the loop will retry later.
 
 ## Rules
 - Your text responses do NOT reach the user. Only DELIVER.md, log.md, and your final report are visible.
 - Stay in scope. Do not invent goals that were not in GOALS.md.
+- ONLY create .exit when GOALS.md is empty and all work is done.
 - Memory is for future sessions. Put durable context there, not session-specific notes.
 - log.md is the receipt. Every goal completed gets a log entry.`
 

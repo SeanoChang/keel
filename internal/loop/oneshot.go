@@ -10,13 +10,20 @@ import (
 	"sync"
 )
 
+// oneShotPrompt wraps a user message with framing so the agent answers directly
+// instead of trying to follow the loop-oriented PROGRAM.md workflow.
+const oneShotPrompt = `This is a one-shot question — not a loop session. Answer the question directly. Do not read GOALS.md or follow PROGRAM.md. You have full access to the workspace for context if needed.
+
+Question: %s`
+
 // RunOneShot executes a single claude invocation with the given message and returns the response.
 func RunOneShot(ctx context.Context, name, dir, message string) (string, error) {
+	prompt := fmt.Sprintf(oneShotPrompt, message)
 	cmd := exec.CommandContext(ctx, "claude",
 		"--agent", name,
 		"--permission-mode", "dontAsk",
 		"--verbose",
-		"-p", message,
+		"-p", prompt,
 	)
 	cmd.Dir = dir
 
@@ -34,12 +41,13 @@ func RunOneShot(ctx context.Context, name, dir, message string) (string, error) 
 // RunOneShotStreaming executes claude with --output-format stream-json,
 // parses structured events through onProgress, and returns the final result text.
 func RunOneShotStreaming(ctx context.Context, name, dir, message string, onProgress func(StreamEvent)) (string, error) {
+	prompt := fmt.Sprintf(oneShotPrompt, message)
 	cmd := exec.CommandContext(ctx, "claude",
 		"--agent", name,
 		"--permission-mode", "dontAsk",
 		"--verbose",
 		"--output-format", "stream-json",
-		"-p", message,
+		"-p", prompt,
 	)
 	cmd.Dir = dir
 

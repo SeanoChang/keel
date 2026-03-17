@@ -200,7 +200,11 @@ func (l *AgentLoop) Run(ctx context.Context) {
 		// Agent requested exit via sentinel file.
 		if workspace.HasExitSignal(l.Dir) {
 			workspace.ClearExitSignal(l.Dir)
-			workspace.ClearGoals(l.Dir) // Reset GOALS.md so agent-written status text doesn't persist
+			// Only clear goals if no real goal headers remain (agent-written
+			// status text shouldn't persist, but actual goals should survive).
+			if !workspace.HasGoalHeaders(l.Dir) {
+				workspace.ClearGoals(l.Dir)
+			}
 			log.Printf("[keel] %s: agent requested exit (.exit), loop stopping", l.Name)
 			l.lifecycle("agent_exit")
 			return
