@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -117,17 +118,17 @@ func (b *Bot) onMessageCreate(s *discordgo.Session, m *discordgo.MessageCreate) 
 	if b.loopMgr.IsRunning(agentName) {
 		b.loopMgr.Nudge(agentName)
 	} else {
-		onOutput, onLifecycle := b.sessionHandlers(agentName, ch.ChannelID, ch.AgentDir)
-		err := b.loopMgr.Start(agentName, ch.AgentDir, loop.DefaultCommandBuilder, b.sleepBetween, b.archiveEvery, onOutput, onLifecycle)
+		onOutput, onLifecycle, opts := b.sessionHandlers(agentName, ch.ChannelID, ch.AgentDir)
+		err := b.loopMgr.Start(agentName, ch.AgentDir, loop.DefaultCommandBuilder, b.sleepBetween, b.archiveEvery, onOutput, onLifecycle, opts)
 		if err != nil {
 			log.Printf("[keel] error starting loop for %s: %v", agentName, err)
 		}
 	}
 }
 
-// sessionHandlers returns an (onOutput, onLifecycle) pair that manages a single
-// ProgressMessage per session — edited in-place as claude streams tool activity.
-func (b *Bot) sessionHandlers(agentName, channelID, agentDir string) (onOutput func(loop.StreamEvent), onLifecycle func(string)) {
+// sessionHandlers returns (onOutput, onLifecycle, opts) for a loop session.
+// The ProgressMessage is edited in-place as claude streams tool activity.
+func (b *Bot) sessionHandlers(agentName, channelID, agentDir string) (onOutput func(loop.StreamEvent), onLifecycle func(string), opts *loop.StartOpts) {
 	var progress *ProgressMessage
 	var mu sync.Mutex
 	var tools []string
@@ -262,6 +263,25 @@ func (b *Bot) sessionHandlers(agentName, channelID, agentDir string) (onOutput f
 			}
 			b.sendStatus(agentName, "Stopped")
 
+		case "paused":
+			if progress != nil {
+				progress.Flush()
+			}
+			b.session.ChannelMessageSend(channelID, fmt.Sprintf("**%s** — Paused. Use `!resume` to continue.", agentName))
+			b.sendStatus(agentName, "Paused")
+
+		case "resumed":
+			b.sendStatus(agentName, "Resumed")
+
+		case "eval_stopped":
+			if progress != nil {
+				progress.Flush()
+				progress.Finalize(fmt.Sprintf("**%s** — Eval loop stopped.", agentName))
+				progress = nil
+			}
+			b.sendStatus(agentName, "Eval stopped")
+			b.sendDelivery(b.session, channelID, agentName, agentDir)
+
 		default:
 			if strings.HasPrefix(event, "error:") {
 				if progress != nil {
@@ -326,6 +346,35 @@ func (b *Bot) sessionHandlers(agentName, channelID, agentDir string) (onOutput f
 			lastDurationMs = ev.DurationMs
 			lastResultText = ev.Text
 		}
+	}
+
+	// Build eval opts
+	projectsDir := filepath.Join(agentDir, "projects")
+	onEvalUpdate := func(update loop.EvalUpdate) {
+		var msg string
+		switch update.Event {
+		case "improved":
+			msg = fmt.Sprintf("**%s** [%s] Iter %d: %s = %.4f (best %.4f) — $%.2f",
+				agentName, update.Project, update.Iteration, update.MetricName, update.Value, update.Best, update.CostSoFar)
+		case "regressed":
+			msg = fmt.Sprintf("**%s** [%s] Iter %d: %s regressed to %.4f (best %.4f). Context injected via INBOX.md.",
+				agentName, update.Project, update.Iteration, update.MetricName, update.Value, update.Best)
+		case "budget_exceeded":
+			msg = fmt.Sprintf("**%s** [%s] Budget limit reached ($%.2f). Loop stopped. Best: %.4f",
+				agentName, update.Project, update.CostSoFar, update.Best)
+		case "converged":
+			msg = fmt.Sprintf("**%s** [%s] Converged — no improvement in recent iterations. Best: %.4f",
+				agentName, update.Project, update.Best)
+		}
+		if msg != "" {
+			b.session.ChannelMessageSend(channelID, msg)
+			b.sendStatus(agentName, fmt.Sprintf("eval: %s", update.Event))
+		}
+	}
+
+	opts = &loop.StartOpts{
+		ProjectsDir:  projectsDir,
+		OnEvalUpdate: onEvalUpdate,
 	}
 
 	return
@@ -480,8 +529,8 @@ func (b *Bot) checkSchedules() {
 				agentName := name
 				go func() {
 					b.loopMgr.Stop(agentName)
-					onOutput, onLifecycle := b.sessionHandlers(agentName, channelID, agentDir)
-					if err := b.loopMgr.Start(agentName, agentDir, loop.DefaultCommandBuilder, b.sleepBetween, b.archiveEvery, onOutput, onLifecycle); err != nil {
+					onOutput, onLifecycle, opts := b.sessionHandlers(agentName, channelID, agentDir)
+					if err := b.loopMgr.Start(agentName, agentDir, loop.DefaultCommandBuilder, b.sleepBetween, b.archiveEvery, onOutput, onLifecycle, opts); err != nil {
 						log.Printf("[keel] scheduler: error restarting %s: %v", agentName, err)
 					}
 				}()
@@ -489,8 +538,8 @@ func (b *Bot) checkSchedules() {
 				b.loopMgr.Nudge(name)
 			}
 		} else {
-			onOutput, onLifecycle := b.sessionHandlers(name, ch.ChannelID, ch.AgentDir)
-			if err := b.loopMgr.Start(name, ch.AgentDir, loop.DefaultCommandBuilder, b.sleepBetween, b.archiveEvery, onOutput, onLifecycle); err != nil {
+			onOutput, onLifecycle, opts := b.sessionHandlers(name, ch.ChannelID, ch.AgentDir)
+			if err := b.loopMgr.Start(name, ch.AgentDir, loop.DefaultCommandBuilder, b.sleepBetween, b.archiveEvery, onOutput, onLifecycle, opts); err != nil {
 				log.Printf("[keel] scheduler: error starting %s: %v", name, err)
 			}
 		}

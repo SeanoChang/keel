@@ -4,13 +4,16 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
 type runningLoop struct {
-	cancel context.CancelFunc
-	done   chan struct{}
-	wake   chan struct{}
+	cancel  context.CancelFunc
+	done    chan struct{}
+	wake    chan struct{}
+	paused  atomic.Bool  // safe for concurrent read from Run() goroutine
+	resumed chan struct{} // signaled by Resume()
 }
 
 type Manager struct {
@@ -24,7 +27,13 @@ func NewManager() *Manager {
 	}
 }
 
-func (m *Manager) Start(name, dir string, builder CommandBuilder, sleep time.Duration, archiveEvery int, onOutput func(StreamEvent), onLifecycle func(string)) error {
+// StartOpts holds optional parameters for Start.
+type StartOpts struct {
+	ProjectsDir  string           // path to projects/ directory (enables eval)
+	OnEvalUpdate func(EvalUpdate) // callback for eval metric notifications
+}
+
+func (m *Manager) Start(name, dir string, builder CommandBuilder, sleep time.Duration, archiveEvery int, onOutput func(StreamEvent), onLifecycle func(string), opts *StartOpts) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -40,6 +49,9 @@ func (m *Manager) Start(name, dir string, builder CommandBuilder, sleep time.Dur
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	wake := make(chan struct{}, 1)
+	resumed := make(chan struct{}, 1)
+
+	rl := &runningLoop{cancel: cancel, done: done, wake: wake, resumed: resumed}
 
 	loop := &AgentLoop{
 		Name:           name,
@@ -50,9 +62,16 @@ func (m *Manager) Start(name, dir string, builder CommandBuilder, sleep time.Dur
 		OnOutput:       onOutput,
 		OnLifecycle:    onLifecycle,
 		Wake:           wake,
+		Paused:         &rl.paused,  // atomic.Bool, safe for lock-free read in Run()
+		Resumed:        resumed,
 	}
 
-	m.loops[name] = &runningLoop{cancel: cancel, done: done, wake: wake}
+	if opts != nil {
+		loop.ProjectsDir = opts.ProjectsDir
+		loop.OnEvalUpdate = opts.OnEvalUpdate
+	}
+
+	m.loops[name] = rl
 
 	go func() {
 		defer close(done)
@@ -80,6 +99,38 @@ func (m *Manager) Nudge(name string) {
 	case rl.wake <- struct{}{}:
 	default: // already pending
 	}
+}
+
+// Pause sets the paused flag so the loop stops between iterations.
+func (m *Manager) Pause(name string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if rl, ok := m.loops[name]; ok {
+		rl.paused.Store(true)
+	}
+}
+
+// Resume clears the paused flag and signals the loop to continue.
+func (m *Manager) Resume(name string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if rl, ok := m.loops[name]; ok {
+		rl.paused.Store(false)
+		select {
+		case rl.resumed <- struct{}{}:
+		default:
+		}
+	}
+}
+
+// IsPaused returns true if the named loop is paused.
+func (m *Manager) IsPaused(name string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if rl, ok := m.loops[name]; ok {
+		return rl.paused.Load()
+	}
+	return false
 }
 
 func (m *Manager) Stop(name string) {

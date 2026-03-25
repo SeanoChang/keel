@@ -42,16 +42,55 @@ func (b *Bot) handleCommand(s *discordgo.Session, m *discordgo.MessageCreate, ag
 	case "ask":
 		if args == "" {
 			response = "Usage: `!ask <message>`"
-		} else if b.loopMgr.IsRunning(agentName) {
-			response = fmt.Sprintf("Agent **%s** loop is running. Use `!stop` first or send a goal instead.", agentName)
 		} else {
 			go b.cmdAsk(s, m, agentName, ch, args)
 			return
+		}
+	case "note":
+		if args == "" {
+			response = "Usage: `!note <message>`"
+		} else {
+			if err := workspace.AppendInbox(ch.AgentDir, false, m.Author.Username, args); err != nil {
+				response = fmt.Sprintf("Error: %v", err)
+			} else {
+				response = "Note added to INBOX.md."
+			}
+		}
+	case "priority":
+		if args == "" {
+			response = "Usage: `!priority <message>`"
+		} else {
+			if err := workspace.AppendInbox(ch.AgentDir, true, m.Author.Username, args); err != nil {
+				response = fmt.Sprintf("Error: %v", err)
+			} else {
+				response = "Priority note added to INBOX.md."
+				if b.loopMgr.IsRunning(agentName) {
+					b.loopMgr.Nudge(agentName)
+				}
+			}
 		}
 	case "stop":
 		response = b.cmdStop(agentName)
 	case "start":
 		response = b.cmdStart(agentName, ch)
+	case "pause":
+		if !b.loopMgr.IsRunning(agentName) {
+			response = fmt.Sprintf("Agent **%s** is not running.", agentName)
+		} else if b.loopMgr.IsPaused(agentName) {
+			response = fmt.Sprintf("Agent **%s** is already paused.", agentName)
+		} else {
+			b.loopMgr.Pause(agentName)
+			response = fmt.Sprintf("Agent **%s** will pause after the current session. Use `!resume` to continue.", agentName)
+		}
+	case "resume":
+		if !b.loopMgr.IsRunning(agentName) {
+			response = fmt.Sprintf("Agent **%s** is not running.", agentName)
+		} else if !b.loopMgr.IsPaused(agentName) {
+			response = fmt.Sprintf("Agent **%s** is not paused.", agentName)
+		} else {
+			b.loopMgr.Resume(agentName)
+			response = fmt.Sprintf("Agent **%s** resumed.", agentName)
+		}
 	case "clear":
 		response = b.cmdClear(ch, agentName)
 	case "wrap-up", "wrapup":
@@ -138,8 +177,8 @@ func (b *Bot) cmdStart(name string, ch config.ChannelConfig) string {
 	if !workspace.HasGoals(ch.AgentDir) {
 		return fmt.Sprintf("Agent **%s** has no goals. Send a message first.", name)
 	}
-	onOutput, onLifecycle := b.sessionHandlers(name, ch.ChannelID, ch.AgentDir)
-	err := b.loopMgr.Start(name, ch.AgentDir, loop.DefaultCommandBuilder, b.sleepBetween, b.archiveEvery, onOutput, onLifecycle)
+	onOutput, onLifecycle, opts := b.sessionHandlers(name, ch.ChannelID, ch.AgentDir)
+	err := b.loopMgr.Start(name, ch.AgentDir, loop.DefaultCommandBuilder, b.sleepBetween, b.archiveEvery, onOutput, onLifecycle, opts)
 	if err != nil {
 		return fmt.Sprintf("Error starting **%s**: %v", name, err)
 	}
@@ -148,7 +187,9 @@ func (b *Bot) cmdStart(name string, ch config.ChannelConfig) string {
 
 func cmdHelp() string {
 	return "**Keel Commands**\n" +
-		"`!ask <msg>` — quick one-shot chat with the agent\n" +
+		"`!ask <msg>` — quick one-shot question (works while loop is running)\n" +
+		"`!note <msg>` — leave a note for the agent (read next session)\n" +
+		"`!priority <msg>` — leave a priority note (handled before goals)\n" +
 		"`!help` — show this message\n" +
 		"`!status` — agent status (running, goals, memory)\n" +
 		"`!goals` — show current GOALS.md\n" +
@@ -156,6 +197,8 @@ func cmdHelp() string {
 		"`!memory` — show MEMORY.md token count\n" +
 		"`!start` — start the agent loop\n" +
 		"`!stop` — stop the agent loop\n" +
+		"`!pause` — pause the loop after the current session\n" +
+		"`!resume` — resume a paused loop\n" +
 		"`!wrap-up [msg]` — tell the agent to finish up and stop gracefully\n" +
 		"`!schedule` — show scheduled goals\n" +
 		"`!clear` — clear all goals\n" +

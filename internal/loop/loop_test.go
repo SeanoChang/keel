@@ -2,9 +2,11 @@ package loop
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -205,7 +207,7 @@ func TestManagerStartStop(t *testing.T) {
 		}
 	}
 
-	err := mgr.Start("test", dir, builder, 100*time.Millisecond, 0, nil, nil)
+	err := mgr.Start("test", dir, builder, 100*time.Millisecond, 0, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,7 +215,7 @@ func TestManagerStartStop(t *testing.T) {
 		t.Error("expected loop to be running")
 	}
 
-	err = mgr.Start("test", dir, builder, 100*time.Millisecond, 0, nil, nil)
+	err = mgr.Start("test", dir, builder, 100*time.Millisecond, 0, nil, nil, nil)
 	if err == nil {
 		t.Error("expected error when starting duplicate")
 	}
@@ -518,5 +520,212 @@ func TestLoopEmitsStoppedOnCancel(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected 'stopped' lifecycle event on cancel, got: %v", events)
+	}
+}
+
+func TestLoopPauseResume(t *testing.T) {
+	dir := setupTestAgent(t)
+	os.WriteFile(filepath.Join(dir, "GOALS.md"), []byte("## [2026-01-01 00:00] from test\nDo something\n"), 0644)
+
+	var mu sync.Mutex
+	var runs int
+	var events []string
+
+	// Command modifies GOALS.md each run to avoid stale detection.
+	builder := func(ctx context.Context, name, d, program string) *CommandSpec {
+		mu.Lock()
+		n := runs
+		runs++
+		mu.Unlock()
+		goalContent := fmt.Sprintf("## [2026-01-01 00:00] from test\nIteration %d\n", n)
+		return &CommandSpec{
+			Name: "bash",
+			Args: []string{"-c", fmt.Sprintf("printf '%s' > %s/GOALS.md", goalContent, d)},
+			Dir:  d,
+		}
+	}
+
+	onLifecycle := func(event string) {
+		mu.Lock()
+		events = append(events, event)
+		mu.Unlock()
+	}
+
+	// Set up pause machinery directly (like Manager does).
+	var paused atomic.Bool
+	resumed := make(chan struct{}, 1)
+
+	loop := &AgentLoop{
+		Name:           "test",
+		Dir:            dir,
+		CommandBuilder: builder,
+		SleepDuration:  50 * time.Millisecond,
+		OnLifecycle:    onLifecycle,
+		Wake:           make(chan struct{}, 1),
+		Paused:         &paused,
+		Resumed:        resumed,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		loop.Run(ctx)
+	}()
+
+	// Let it run a couple sessions
+	time.Sleep(300 * time.Millisecond)
+
+	// Pause
+	paused.Store(true)
+
+	// Wait for loop to reach the pause point
+	time.Sleep(300 * time.Millisecond)
+
+	mu.Lock()
+	runsAtPause := runs
+	mu.Unlock()
+
+	// While paused, runs should not increase
+	time.Sleep(300 * time.Millisecond)
+	mu.Lock()
+	runsAfterWait := runs
+	mu.Unlock()
+
+	if runsAfterWait != runsAtPause {
+		t.Errorf("expected no new runs while paused, got %d → %d", runsAtPause, runsAfterWait)
+	}
+
+	// Resume
+	paused.Store(false)
+	select {
+	case resumed <- struct{}{}:
+	default:
+	}
+
+	// Let it run again
+	time.Sleep(300 * time.Millisecond)
+
+	mu.Lock()
+	runsAfterResume := runs
+	mu.Unlock()
+
+	if runsAfterResume <= runsAtPause {
+		t.Errorf("expected runs to increase after resume, got %d (was %d at pause)", runsAfterResume, runsAtPause)
+	}
+
+	cancel()
+	<-done
+
+	// Check lifecycle events
+	mu.Lock()
+	defer mu.Unlock()
+	foundPaused := false
+	foundResumed := false
+	for _, ev := range events {
+		if ev == "paused" {
+			foundPaused = true
+		}
+		if ev == "resumed" {
+			foundResumed = true
+		}
+	}
+	if !foundPaused {
+		t.Errorf("expected 'paused' lifecycle event, got: %v", events)
+	}
+	if !foundResumed {
+		t.Errorf("expected 'resumed' lifecycle event, got: %v", events)
+	}
+}
+
+func TestCheckEvalResultsConvergence(t *testing.T) {
+	dir := setupTestAgent(t)
+
+	// Create a project with EVAL.md and metrics
+	projDir := filepath.Join(dir, "projects", "test-project")
+	metricsDir := filepath.Join(projDir, "metrics")
+	os.MkdirAll(metricsDir, 0755)
+
+	evalContent := "---\nmetric: score\ndirection: higher\nbaseline: 0.5\nmax_no_improve: 2\n---\n"
+	os.WriteFile(filepath.Join(projDir, "EVAL.md"), []byte(evalContent), 0644)
+
+	loop := &AgentLoop{
+		Name:        "test",
+		Dir:         dir,
+		ProjectsDir: filepath.Join(dir, "projects"),
+	}
+
+	// First metric: improvement over baseline
+	os.WriteFile(filepath.Join(metricsDir, "001.json"), []byte(`{"value": 0.6, "iteration": 1}`), 0644)
+	metricsUpdated := false
+	stop := loop.checkEvalResults(&metricsUpdated)
+	if !metricsUpdated {
+		t.Error("expected metricsUpdated=true")
+	}
+	if stop {
+		t.Error("should not stop after improvement")
+	}
+
+	// Second metric: no improvement
+	os.WriteFile(filepath.Join(metricsDir, "002.json"), []byte(`{"value": 0.55, "iteration": 2}`), 0644)
+	metricsUpdated = false
+	loop.checkEvalResults(&metricsUpdated)
+
+	// Third metric: still no improvement → should converge (max_no_improve=2)
+	os.WriteFile(filepath.Join(metricsDir, "003.json"), []byte(`{"value": 0.54, "iteration": 3}`), 0644)
+	metricsUpdated = false
+	stop = loop.checkEvalResults(&metricsUpdated)
+	if !stop {
+		t.Error("expected stop after 2 iterations with no improvement (convergence)")
+	}
+}
+
+func TestCheckEvalResultsBudget(t *testing.T) {
+	dir := setupTestAgent(t)
+
+	projDir := filepath.Join(dir, "projects", "budget-test")
+	metricsDir := filepath.Join(projDir, "metrics")
+	os.MkdirAll(metricsDir, 0755)
+
+	evalContent := "---\nmetric: score\ndirection: higher\nbaseline: 0.5\nbudget: 1.00\n---\n"
+	os.WriteFile(filepath.Join(projDir, "EVAL.md"), []byte(evalContent), 0644)
+
+	loop := &AgentLoop{
+		Name:            "test",
+		Dir:             dir,
+		ProjectsDir:     filepath.Join(dir, "projects"),
+		LastSessionCost: 0.60,
+	}
+
+	// First metric: under budget
+	os.WriteFile(filepath.Join(metricsDir, "001.json"), []byte(`{"value": 0.6, "iteration": 1}`), 0644)
+	metricsUpdated := false
+	stop := loop.checkEvalResults(&metricsUpdated)
+	if stop {
+		t.Error("should not stop, still under budget")
+	}
+
+	// Second metric: over budget
+	loop.LastSessionCost = 0.60
+	os.WriteFile(filepath.Join(metricsDir, "002.json"), []byte(`{"value": 0.7, "iteration": 2}`), 0644)
+	metricsUpdated = false
+	stop = loop.checkEvalResults(&metricsUpdated)
+	if !stop {
+		t.Error("expected stop after exceeding budget")
+	}
+}
+
+func TestCheckEvalResultsDisabled(t *testing.T) {
+	// No ProjectsDir set → eval should be a no-op
+	loop := &AgentLoop{Name: "test", Dir: t.TempDir()}
+	metricsUpdated := false
+	stop := loop.checkEvalResults(&metricsUpdated)
+	if stop {
+		t.Error("should not stop when eval disabled")
+	}
+	if metricsUpdated {
+		t.Error("should not report metrics updated when eval disabled")
 	}
 }

@@ -12,6 +12,7 @@ const DefaultProgram = `# Session Program
 
 ## Orient
 Read GOALS.md. Identify the highest-priority goal. Read MEMORY.md for prior context.
+Check INBOX.md for messages from the user. Handle priority items before continuing with goals. Clear handled items from INBOX.md. If no INBOX.md exists, skip this step.
 
 ## Execute
 Work the goal thoroughly. Default to deep, rigorous work.
@@ -22,6 +23,8 @@ For complex goals, break them into sub-goals in GOALS.md. Use this format:
 
 ## [YYYY-MM-DD HH:MM] self-directed: <brief title>
 <description of what to investigate or build>
+
+If working inside a project (projects/<name>/), commit at natural checkpoints. If the project has EVAL.md, follow its evaluation protocol after each significant change.
 
 Do the actual work. Do not deliberate about what you could do — just do it.
 Never ask clarifying questions — make your best judgment and proceed. You are running autonomously.
@@ -270,6 +273,52 @@ func ClearDeliver(dir string) error {
 		return nil
 	}
 	return err
+}
+
+// AppendInbox appends a message to INBOX.md so the agent can read it next session.
+func AppendInbox(dir string, priority bool, username, message string) error {
+	f, err := os.OpenFile(filepath.Join(dir, "INBOX.md"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	ts := time.Now().Format("2006-01-02 15:04")
+	kind := "note"
+	if priority {
+		kind = "priority"
+	}
+	_, err = fmt.Fprintf(f, "\n## [%s] %s from %s\n%s\n", ts, kind, username, message)
+	return err
+}
+
+// ReadInbox reads INBOX.md. Returns "" if not found.
+func ReadInbox(dir string) (string, error) {
+	data, err := os.ReadFile(filepath.Join(dir, "INBOX.md"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", err
+	}
+	return string(data), nil
+}
+
+// ClearInbox removes INBOX.md after the agent has handled its contents.
+func ClearInbox(dir string) error {
+	err := os.Remove(filepath.Join(dir, "INBOX.md"))
+	if os.IsNotExist(err) {
+		return nil
+	}
+	return err
+}
+
+// HasInbox returns true if INBOX.md exists and is non-empty.
+func HasInbox(dir string) bool {
+	info, err := os.Stat(filepath.Join(dir, "INBOX.md"))
+	if err != nil {
+		return false
+	}
+	return info.Size() > 0
 }
 
 func LogSize(dir string) (int64, error) {

@@ -9,10 +9,13 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
+	"github.com/SeanoChang/keel/internal/eval"
 	"github.com/SeanoChang/keel/internal/workspace"
 )
 
@@ -50,8 +53,15 @@ type AgentLoop struct {
 	MaxErrors        int // exit loop after N consecutive session errors (0 = default 3)
 	MaxStale         int // exit loop after N consecutive sessions with unchanged goals (0 = default 2)
 	OnOutput         func(event StreamEvent)
-	OnLifecycle      func(event string) // session_start, session_end, sleeping, woke, goals_empty, agent_exit, wrap_up, stale, stopped, too_many_errors, error:*
+	OnLifecycle      func(event string) // session_start, session_end, sleeping, woke, goals_empty, agent_exit, wrap_up, stale, stopped, too_many_errors, paused, resumed, eval_stopped, error:*
 	Wake             chan struct{}       // signal to interrupt sleep early (new goals arrived)
+	Paused           *atomic.Bool       // pointer to Manager's paused flag (nil = never pause)
+	Resumed          chan struct{}       // signal from Manager.Resume()
+	ProjectsDir      string             // path to projects/ directory (empty = eval disabled)
+	CumulativeCost   float64            // accumulated session costs
+	LastSessionCost  float64            // cost from most recent session
+	OnEvalUpdate     func(EvalUpdate)   // callback for eval metric notifications
+	evalStates       map[string]*eval.EvalState // lazy-init, keyed by project name
 }
 
 func (l *AgentLoop) maxErrors() int {
@@ -144,6 +154,10 @@ func (l *AgentLoop) runStreaming(ctx context.Context, cmd *exec.Cmd) error {
 		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 		for scanner.Scan() {
 			for _, ev := range ParseStreamJSON(scanner.Text()) {
+				if ev.Kind == EventResult {
+					// Safe: written before ioWg.Done(), read after RunOnce returns.
+					l.LastSessionCost = ev.Cost
+				}
 				l.OnOutput(ev)
 			}
 		}
@@ -267,6 +281,15 @@ func (l *AgentLoop) Run(ctx context.Context) {
 			return
 		}
 
+		// Check evaluation results from projects.
+		l.CumulativeCost += l.LastSessionCost
+		evalMetricsUpdated := false
+		if l.checkEvalResults(&evalMetricsUpdated) {
+			l.lifecycle("eval_stopped")
+			return
+		}
+		l.LastSessionCost = 0
+
 		// Detect stale loops: if goals didn't change, the agent made no progress.
 		goalsAfter, _ := workspace.ReadGoals(l.Dir)
 		if goalsAfter == goalsBefore {
@@ -277,7 +300,12 @@ func (l *AgentLoop) Run(ctx context.Context) {
 				l.lifecycle("goals_empty")
 				return
 			}
-			staleCount++
+			// Eval metrics updating suppresses stale detection — agent is making progress via eval.
+			if evalMetricsUpdated {
+				staleCount = 0
+			} else {
+				staleCount++
+			}
 			log.Printf("[keel] %s: goals unchanged (%d/%d)", l.Name, staleCount, l.maxStale())
 			if staleCount >= l.maxStale() {
 				log.Printf("[keel] %s: goals stale for %d sessions, exiting loop", l.Name, staleCount)
@@ -310,7 +338,136 @@ func (l *AgentLoop) Run(ctx context.Context) {
 			l.lifecycle("woke")
 		case <-time.After(l.SleepDuration):
 		}
+
+		// Check pause between iterations.
+		if l.Paused != nil && l.Paused.Load() {
+			l.lifecycle("paused")
+			select {
+			case <-ctx.Done():
+				l.lifecycle("stopped")
+				return
+			case <-l.Resumed:
+				l.lifecycle("resumed")
+			}
+		}
 	}
+}
+
+// EvalUpdate is emitted to OnEvalUpdate when a project's metric changes.
+type EvalUpdate struct {
+	Project    string
+	Iteration  int
+	MetricName string
+	Value      float64
+	Best       float64
+	Baseline   float64
+	CostSoFar  float64
+	Event      string // "improved", "regressed", "budget_exceeded", "converged"
+}
+
+// checkEvalResults scans projects/ for EVAL.md and checks for new metrics.
+// Sets *metricsUpdated to true if any metrics were processed.
+// Returns true if the loop should stop (budget or convergence).
+func (l *AgentLoop) checkEvalResults(metricsUpdated *bool) bool {
+	if l.ProjectsDir == "" {
+		return false
+	}
+	if l.evalStates == nil {
+		l.evalStates = make(map[string]*eval.EvalState)
+	}
+
+	projects, err := os.ReadDir(l.ProjectsDir)
+	if err != nil {
+		return false
+	}
+
+	for _, p := range projects {
+		if !p.IsDir() {
+			continue
+		}
+		projectDir := filepath.Join(l.ProjectsDir, p.Name())
+		evalPath := filepath.Join(projectDir, "EVAL.md")
+
+		cfg, err := eval.ParseEval(evalPath)
+		if err != nil {
+			log.Printf("[keel] %s: error parsing %s: %v", l.Name, evalPath, err)
+			continue
+		}
+		if cfg == nil {
+			continue
+		}
+
+		// Get or create state for this project.
+		state, ok := l.evalStates[p.Name()]
+		if !ok {
+			state = &eval.EvalState{
+				Config:     *cfg,
+				ProjectDir: projectDir,
+				Best:       cfg.Baseline,
+				Previous:   cfg.Baseline,
+			}
+			l.evalStates[p.Name()] = state
+		}
+
+		metricsDir := filepath.Join(projectDir, "metrics")
+		metric, err := eval.ReadLatestMetric(metricsDir)
+		if err != nil || metric == nil {
+			continue
+		}
+		if metric.Iteration <= state.Iteration {
+			continue // already processed
+		}
+
+		*metricsUpdated = true
+		state.Iteration = metric.Iteration
+		// CostSoFar tracks cost of sessions where this project had eval activity.
+		// In multi-project setups, each project accumulates the full session cost
+		// independently, so the sum across projects may exceed actual total spend.
+		state.CostSoFar += l.LastSessionCost
+
+		improved := eval.IsImproved(state.Previous, metric.Value, cfg.Direction)
+		if improved {
+			if (cfg.Direction == "higher" && metric.Value > state.Best) ||
+				(cfg.Direction == "lower" && metric.Value < state.Best) {
+				state.Best = metric.Value
+			}
+			state.NoImproveCount = 0
+			l.emitEvalUpdate(p.Name(), "improved", state, metric.Value)
+		} else {
+			state.NoImproveCount++
+			// Inject regression context into INBOX.md so the agent can decide how to respond.
+			msg := fmt.Sprintf("Eval regression in project %s: %s went from %.4f to %.4f (best: %.4f, baseline: %.4f). Consider reverting, adjusting your approach, or trying a different strategy.",
+				p.Name(), cfg.Metric, state.Previous, metric.Value, state.Best, cfg.Baseline)
+			if err := workspace.AppendInbox(l.Dir, true, "keel", msg); err != nil {
+				log.Printf("[keel] %s: error writing regression to INBOX.md: %v", l.Name, err)
+			}
+			l.emitEvalUpdate(p.Name(), "regressed", state, metric.Value)
+		}
+
+		state.Previous = metric.Value
+
+		if stop, reason := eval.ShouldStop(state); stop {
+			l.emitEvalUpdate(p.Name(), reason, state, metric.Value)
+			return true
+		}
+	}
+	return false
+}
+
+func (l *AgentLoop) emitEvalUpdate(project, event string, state *eval.EvalState, currentValue float64) {
+	if l.OnEvalUpdate == nil {
+		return
+	}
+	l.OnEvalUpdate(EvalUpdate{
+		Project:    project,
+		Iteration:  state.Iteration,
+		MetricName: state.Config.Metric,
+		Value:      currentValue,
+		Baseline:   state.Config.Baseline,
+		Best:       state.Best,
+		CostSoFar:  state.CostSoFar,
+		Event:      event,
+	})
 }
 
 func (l *AgentLoop) runArchive() {
