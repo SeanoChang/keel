@@ -54,6 +54,8 @@ func (b *Bot) handleCommand(s *discordgo.Session, m *discordgo.MessageCreate, ag
 		response = b.cmdStart(agentName, ch)
 	case "clear":
 		response = b.cmdClear(ch, agentName)
+	case "wrap-up", "wrapup":
+		response = b.cmdWrapUp(agentName, ch, args)
 	case "schedule":
 		response = b.cmdSchedule(ch, args)
 	case "update", "keel-update":
@@ -154,6 +156,7 @@ func cmdHelp() string {
 		"`!memory` — show MEMORY.md token count\n" +
 		"`!start` — start the agent loop\n" +
 		"`!stop` — stop the agent loop\n" +
+		"`!wrap-up [msg]` — tell the agent to finish up and stop gracefully\n" +
 		"`!schedule` — show scheduled goals\n" +
 		"`!clear` — clear all goals\n" +
 		"`!update` — update keel to latest release and restart\n" +
@@ -251,6 +254,29 @@ func (b *Bot) cmdClear(ch config.ChannelConfig, name string) string {
 		return fmt.Sprintf("GOALS.md cleared for **%s**. Loop stopped.", name)
 	}
 	return fmt.Sprintf("GOALS.md cleared for **%s**.", name)
+}
+
+func (b *Bot) cmdWrapUp(name string, ch config.ChannelConfig, extra string) string {
+	if !b.loopMgr.IsRunning(name) {
+		return fmt.Sprintf("Agent **%s** is not running.", name)
+	}
+
+	// Write sentinel so loop stops after current session.
+	if err := workspace.WriteWrapUpSignal(ch.AgentDir); err != nil {
+		return fmt.Sprintf("Error writing wrap-up signal: %v", err)
+	}
+
+	// Inject wrap-up goal so agent knows to summarize.
+	wrapUpGoal := "Wrap up your current work. Summarize what you accomplished and what remains incomplete. Write your summary to DELIVER.md. Then remove all goals from GOALS.md and create .exit."
+	if extra != "" {
+		wrapUpGoal = fmt.Sprintf("Wrap up: %s\n\nSummarize what you accomplished and what remains. Write to DELIVER.md. Remove goals and create .exit.", extra)
+	}
+	if err := workspace.AppendGoal(ch.AgentDir, "keel", wrapUpGoal); err != nil {
+		return fmt.Sprintf("Error adding wrap-up goal: %v", err)
+	}
+
+	b.loopMgr.Nudge(name)
+	return fmt.Sprintf("Agent **%s** will wrap up after the current session.", name)
 }
 
 func (b *Bot) cmdSchedule(ch config.ChannelConfig, args string) string {

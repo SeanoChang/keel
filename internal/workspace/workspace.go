@@ -19,6 +19,13 @@ Work the goal thoroughly:
 - If tagged [deep], research extensively, cross-reference, produce rigorous output.
 - Otherwise, use your judgment on appropriate depth. Default to thorough over shallow.
 
+For ambitious or complex goals, break them into sub-goals and add them to GOALS.md. Use this exact format so the loop recognizes them:
+
+## [YYYY-MM-DD HH:MM] self-directed: <brief title>
+<description of what to investigate or build>
+
+This keeps the loop running and lets you work through multi-step research or implementation systematically. Think like an autonomous researcher: when you discover new questions, open problems, or dependencies, add them as sub-goals rather than trying to handle everything in a single pass.
+
 Do the actual work. Do not deliberate about what you could do — just do it.
 Verify your work before marking a goal complete. Read back files you wrote. Confirm answers are grounded.
 
@@ -49,8 +56,10 @@ If you are blocked on a goal and need human input, note the blocker in GOALS.md 
 
 ## Rules
 - Your text responses do NOT reach the user. Only DELIVER.md, log.md, and your final report are visible.
-- Stay in scope. Do not invent goals that were not in GOALS.md.
+- You may add sub-goals to GOALS.md for follow-up research or deeper investigation, but stay grounded in the original goals. Use the ## [timestamp] self-directed: format.
 - ONLY create .exit when GOALS.md is empty and all work is done.
+- NEVER write status text (e.g. "All done!", "No goals remaining") to GOALS.md. Only remove completed goals or add new sub-goals.
+- If you see a .wrap-up file in the workspace root, finish your current task promptly, summarize your work in DELIVER.md, then create .exit.
 - Memory is for future sessions. Put durable context there, not session-specific notes.
 - log.md is the receipt. Every goal completed gets a log entry.`
 
@@ -202,6 +211,26 @@ func HasExitSignal(dir string) bool {
 // ClearExitSignal removes the .exit sentinel file.
 func ClearExitSignal(dir string) error {
 	err := os.Remove(filepath.Join(dir, ".exit"))
+	if os.IsNotExist(err) {
+		return nil
+	}
+	return err
+}
+
+// HasWrapUpSignal checks if the user has requested a wrap-up.
+func HasWrapUpSignal(dir string) bool {
+	_, err := os.Stat(filepath.Join(dir, ".wrap-up"))
+	return err == nil
+}
+
+// WriteWrapUpSignal creates the .wrap-up sentinel file.
+func WriteWrapUpSignal(dir string) error {
+	return os.WriteFile(filepath.Join(dir, ".wrap-up"), []byte(""), 0644)
+}
+
+// ClearWrapUpSignal removes the .wrap-up sentinel file.
+func ClearWrapUpSignal(dir string) error {
+	err := os.Remove(filepath.Join(dir, ".wrap-up"))
 	if os.IsNotExist(err) {
 		return nil
 	}

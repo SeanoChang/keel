@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -232,6 +233,35 @@ func (b *Bot) sessionHandlers(agentName, channelID, agentDir string) (onOutput f
 			b.sendStatus(agentName, "Too many errors — loop stopped")
 			b.sendDelivery(b.session, channelID, agentName, agentDir)
 
+		case "wrap_up":
+			if progress != nil {
+				progress.Flush()
+				summary := fmt.Sprintf("**%s** — Wrapped up. Loop stopped.", agentName)
+				if len(tools) > 0 {
+					summary += " " + sessionStats(len(tools), lastCost, lastDurationMs)
+					summary += "\n" + formatToolTrail(tools)
+				}
+				progress.Finalize(summary)
+				progress = nil
+			} else {
+				b.session.ChannelMessageSend(channelID, fmt.Sprintf("**%s** — Wrapped up. Loop stopped.", agentName))
+			}
+			b.sendStatus(agentName, "Wrap-up — loop stopped")
+			b.runAgentArchive(agentName, agentDir)
+			if lastResultText != "" {
+				report := fmt.Sprintf("**%s — Report**\n%s", agentName, lastResultText)
+				sendChunked(b.session, channelID, report)
+			}
+			b.sendDelivery(b.session, channelID, agentName, agentDir)
+
+		case "stopped":
+			if progress != nil {
+				progress.Flush()
+				progress.Finalize(fmt.Sprintf("**%s** — Stopped.", agentName))
+				progress = nil
+			}
+			b.sendStatus(agentName, "Stopped")
+
 		default:
 			if strings.HasPrefix(event, "error:") {
 				if progress != nil {
@@ -269,6 +299,9 @@ func (b *Bot) sessionHandlers(agentName, channelID, agentDir string) (onOutput f
 
 		case loop.EventThinking:
 			msg := fmt.Sprintf("**%s** — Thinking...", agentName)
+			if ev.Text != "" {
+				msg = fmt.Sprintf("**%s** — Working... %s", agentName, ev.Text)
+			}
 			if len(tools) > 0 {
 				msg += fmt.Sprintf("\n-# %d tools", len(tools))
 			}
@@ -387,6 +420,19 @@ func sendChunked(s *discordgo.Session, channelID, text string) {
 		text = text[cut:]
 		// Trim leading newline from next chunk
 		text = strings.TrimPrefix(text, "\n")
+	}
+}
+
+// runAgentArchive runs cubit archive in the agent directory to send logs to nark.
+func (b *Bot) runAgentArchive(agentName, agentDir string) {
+	log.Printf("[keel] %s: running cubit archive (wrap-up)", agentName)
+	cmd := exec.Command("cubit", "archive")
+	cmd.Dir = agentDir
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		log.Printf("[keel] %s: archive error: %v\n%s", agentName, err, output)
+	} else {
+		log.Printf("[keel] %s: archive complete", agentName)
 	}
 }
 

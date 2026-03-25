@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/SeanoChang/keel/internal/workspace"
@@ -49,7 +50,7 @@ type AgentLoop struct {
 	MaxErrors        int // exit loop after N consecutive session errors (0 = default 3)
 	MaxStale         int // exit loop after N consecutive sessions with unchanged goals (0 = default 2)
 	OnOutput         func(event StreamEvent)
-	OnLifecycle      func(event string) // session_start, session_end, error, sleeping, goals_empty, woke, stale
+	OnLifecycle      func(event string) // session_start, session_end, sleeping, woke, goals_empty, agent_exit, wrap_up, stale, stopped, too_many_errors, error:*
 	Wake             chan struct{}       // signal to interrupt sleep early (new goals arrived)
 }
 
@@ -93,6 +94,12 @@ func (l *AgentLoop) RunOnce(ctx context.Context) error {
 		cmd.Env = spec.Env
 	}
 
+	// Graceful shutdown: SIGTERM first, then SIGKILL after WaitDelay.
+	cmd.Cancel = func() error {
+		return cmd.Process.Signal(syscall.SIGTERM)
+	}
+	cmd.WaitDelay = 10 * time.Second
+
 	if l.OnOutput != nil {
 		return l.runStreaming(ctx, cmd)
 	}
@@ -127,12 +134,12 @@ func (l *AgentLoop) runStreaming(ctx context.Context, cmd *exec.Cmd) error {
 		return fmt.Errorf("start agent: %w", err)
 	}
 
-	var wg sync.WaitGroup
-	wg.Add(2)
+	var ioWg sync.WaitGroup
+	ioWg.Add(2)
 
 	// stdout → parse JSON stream events
 	go func() {
-		defer wg.Done()
+		defer ioWg.Done()
 		scanner := bufio.NewScanner(stdout)
 		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 		for scanner.Scan() {
@@ -144,11 +151,36 @@ func (l *AgentLoop) runStreaming(ctx context.Context, cmd *exec.Cmd) error {
 
 	// stderr → drain silently (stream-json puts everything on stdout)
 	go func() {
-		defer wg.Done()
+		defer ioWg.Done()
 		io.Copy(io.Discard, stderr)
 	}()
 
-	wg.Wait()
+	// Heartbeat: re-emit EventThinking every 60s so Discord message refreshes
+	// with elapsed time, helping users distinguish deep work from stuck processes.
+	heartbeatDone := make(chan struct{})
+	if l.OnOutput != nil {
+		go func() {
+			start := time.Now()
+			ticker := time.NewTicker(60 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-heartbeatDone:
+					return
+				case <-ticker.C:
+					elapsed := time.Since(start).Round(time.Second)
+					l.OnOutput(StreamEvent{
+						Kind: EventThinking,
+						Text: fmt.Sprintf("(%s elapsed)", elapsed),
+					})
+				}
+			}
+		}()
+	}
+
+	ioWg.Wait()
+	close(heartbeatDone)
+
 	if err := cmd.Wait(); err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -159,13 +191,18 @@ func (l *AgentLoop) runStreaming(ctx context.Context, cmd *exec.Cmd) error {
 }
 
 // Run loops: check goals -> runOnce -> maybe archive -> sleep -> repeat.
-// Exits when goals empty, ctx cancelled, too many consecutive errors, or stale (goals unchanged).
+// Exits when goals empty, ctx cancelled, too many consecutive errors, stale, or wrap-up.
 func (l *AgentLoop) Run(ctx context.Context) {
+	// Clear stale sentinels from previous sessions to prevent poisoning.
+	workspace.ClearExitSignal(l.Dir)
+	workspace.ClearWrapUpSignal(l.Dir)
+
 	var sessions int
 	var consecutiveErrors int
 	var staleCount int
 	for {
 		if ctx.Err() != nil {
+			l.lifecycle("stopped")
 			return
 		}
 		if !workspace.HasGoals(l.Dir) {
@@ -182,6 +219,7 @@ func (l *AgentLoop) Run(ctx context.Context) {
 		err := l.RunOnce(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
+				l.lifecycle("stopped")
 				return
 			}
 			consecutiveErrors++
@@ -200,33 +238,61 @@ func (l *AgentLoop) Run(ctx context.Context) {
 		// Agent requested exit via sentinel file.
 		if workspace.HasExitSignal(l.Dir) {
 			workspace.ClearExitSignal(l.Dir)
-			// Only clear goals if no real goal headers remain (agent-written
-			// status text shouldn't persist, but actual goals should survive).
+			wrapUp := workspace.HasWrapUpSignal(l.Dir)
+			if wrapUp {
+				workspace.ClearWrapUpSignal(l.Dir)
+			}
 			if !workspace.HasGoalHeaders(l.Dir) {
 				workspace.ClearGoals(l.Dir)
 			}
-			log.Printf("[keel] %s: agent requested exit (.exit), loop stopping", l.Name)
-			l.lifecycle("agent_exit")
+			// If wrap-up was also requested, emit wrap_up (triggers archive).
+			if wrapUp {
+				log.Printf("[keel] %s: agent exited during wrap-up, loop stopping", l.Name)
+				l.lifecycle("wrap_up")
+			} else {
+				log.Printf("[keel] %s: agent requested exit (.exit), loop stopping", l.Name)
+				l.lifecycle("agent_exit")
+			}
+			return
+		}
+
+		// User requested wrap-up via !wrap-up command (agent didn't create .exit).
+		if workspace.HasWrapUpSignal(l.Dir) {
+			workspace.ClearWrapUpSignal(l.Dir)
+			if !workspace.HasGoalHeaders(l.Dir) {
+				workspace.ClearGoals(l.Dir)
+			}
+			log.Printf("[keel] %s: wrap-up signal, loop stopping", l.Name)
+			l.lifecycle("wrap_up")
 			return
 		}
 
 		// Detect stale loops: if goals didn't change, the agent made no progress.
 		goalsAfter, _ := workspace.ReadGoals(l.Dir)
 		if goalsAfter == goalsBefore {
+			// If no real goal headers remain, agent left status junk — treat as empty.
+			if !workspace.HasGoalHeaders(l.Dir) {
+				workspace.ClearGoals(l.Dir)
+				log.Printf("[keel] %s: no goal headers remain, cleaning up", l.Name)
+				l.lifecycle("goals_empty")
+				return
+			}
 			staleCount++
 			log.Printf("[keel] %s: goals unchanged (%d/%d)", l.Name, staleCount, l.maxStale())
 			if staleCount >= l.maxStale() {
 				log.Printf("[keel] %s: goals stale for %d sessions, exiting loop", l.Name, staleCount)
-				// If stale because of agent-written status text (no real goal headers),
-				// clean up GOALS.md so it doesn't poison future sessions.
-				if !workspace.HasGoalHeaders(l.Dir) {
-					workspace.ClearGoals(l.Dir)
-				}
 				l.lifecycle("stale")
 				return
 			}
 		} else {
 			staleCount = 0
+		}
+
+		// Quick exit if goals were cleared during session (avoids unnecessary sleep).
+		if !workspace.HasGoals(l.Dir) {
+			log.Printf("[keel] %s: goals cleared during session, loop exiting", l.Name)
+			l.lifecycle("goals_empty")
+			return
 		}
 
 		sessions++
@@ -237,6 +303,7 @@ func (l *AgentLoop) Run(ctx context.Context) {
 		l.lifecycle("sleeping")
 		select {
 		case <-ctx.Done():
+			l.lifecycle("stopped")
 			return
 		case <-l.Wake:
 			staleCount = 0 // new goals arrived, reset stale counter
