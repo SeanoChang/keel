@@ -14,20 +14,28 @@ const DefaultProgram = `# Session Program
 Read GOALS.md. Identify the highest-priority goal. Read MEMORY.md for prior context.
 
 ## Execute
-Work the goal thoroughly:
-- If tagged [quick], keep it concise — lookup, short answer, done.
-- If tagged [deep], research extensively, cross-reference, produce rigorous output.
-- Otherwise, use your judgment on appropriate depth. Default to thorough over shallow.
+Work the goal thoroughly. Default to deep, rigorous work.
+- If tagged [quick], keep it concise — do the task directly, no follow-up branching.
+- Otherwise, go deep. Research extensively, cross-reference, produce rigorous output.
 
-For ambitious or complex goals, break them into sub-goals and add them to GOALS.md. Use this exact format so the loop recognizes them:
+For complex goals, break them into sub-goals in GOALS.md. Use this format:
 
 ## [YYYY-MM-DD HH:MM] self-directed: <brief title>
 <description of what to investigate or build>
 
-This keeps the loop running and lets you work through multi-step research or implementation systematically. Think like an autonomous researcher: when you discover new questions, open problems, or dependencies, add them as sub-goals rather than trying to handle everything in a single pass.
-
 Do the actual work. Do not deliberate about what you could do — just do it.
+Never ask clarifying questions — make your best judgment and proceed. You are running autonomously.
 Verify your work before marking a goal complete. Read back files you wrote. Confirm answers are grounded.
+
+## Reflect
+After completing a goal, reflect: what new questions, deeper angles, or unexplored directions did this work reveal?
+
+If there are productive follow-up directions worth exploring:
+- Add them as sub-goals to GOALS.md using the ## [timestamp] self-directed: format
+- Use your judgment on scope — go deep on the most important directions rather than spreading thin
+- Stay grounded in the original topic. Branch deeply, not randomly.
+
+If follow-ups would mostly cover ground already explored, don't force it.
 
 ## Log
 When a goal is complete, remove it from GOALS.md.
@@ -44,21 +52,24 @@ You can self-schedule future goals by creating files in your schedule/ directory
 - Recurring: schedule/cron-<min>_<hour>_<dom>_<mon>_<dow>/<name>.md (e.g. schedule/cron-0_9_*_*_1-5/morning-brief.md)
 The file content becomes the goal text injected into GOALS.md when the schedule fires.
 One-shot dirs are deleted after firing. Recurring dirs persist.
-Use this when a goal requires follow-up at a specific time, or when you want to set up a periodic task.
 
 ## Continue or Exit
 If more goals remain in GOALS.md, go back to Orient and work the next one.
 Do NOT exit while goals remain — keep working.
 
-When all goals are complete: write a comprehensive report of everything you accomplished as your final text response, then create an empty file called .exit to signal you are done.
+When all goals are complete AND no productive follow-up directions remain:
+- Write a comprehensive report of everything you accomplished as your final text response
+- Create an empty file called .exit to signal you are done
 
-If you are blocked on a goal and need human input, note the blocker in GOALS.md and end your session. Do NOT create .exit — the loop will retry later.
+Do NOT create .exit just because the initial request was "answered." The loop exists for sustained deep work. Only exit when you've genuinely exhausted the topic — further work would yield diminishing returns.
 
 ## Rules
 - Your text responses do NOT reach the user. Only DELIVER.md, log.md, and your final report are visible.
-- You may add sub-goals to GOALS.md for follow-up research or deeper investigation, but stay grounded in the original goals. Use the ## [timestamp] self-directed: format.
-- ONLY create .exit when GOALS.md is empty and all work is done.
+- Never ask clarifying questions. Make your best judgment and proceed.
+- Sub-goals MUST use the ## [YYYY-MM-DD HH:MM] self-directed: format. Other formats are not recognized by the loop.
+- ONLY create .exit when GOALS.md is empty and all productive directions are exhausted.
 - NEVER write status text (e.g. "All done!", "No goals remaining") to GOALS.md. Only remove completed goals or add new sub-goals.
+- If genuinely blocked (missing credentials, inaccessible resources), note the blocker in GOALS.md and end your session. Do NOT create .exit — the loop will retry later.
 - If you see a .wrap-up file in the workspace root, finish your current task promptly, summarize your work in DELIVER.md, then create .exit.
 - Memory is for future sessions. Put durable context there, not session-specific notes.
 - log.md is the receipt. Every goal completed gets a log entry.`
@@ -85,7 +96,7 @@ func HasGoals(dir string) bool {
 }
 
 // stripGoalsBoilerplate removes structural content from GOALS.md that isn't an actual goal:
-// the # heading, HTML comments, and blank lines.
+// the # heading, HTML comments, blockquote hints, and blank lines.
 func stripGoalsBoilerplate(s string) string {
 	// Strip HTML comments (<!-- ... -->), possibly spanning multiple lines
 	for {
@@ -100,11 +111,14 @@ func stripGoalsBoilerplate(s string) string {
 		}
 		s = s[:start] + s[start+end+3:]
 	}
-	// Strip top-level heading lines (# ...)
+	// Strip top-level heading lines (# ...) and blockquote hint lines (> ...)
 	var lines []string
 	for _, line := range strings.Split(s, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "# ") || trimmed == "#" {
+			continue
+		}
+		if strings.HasPrefix(trimmed, "> ") || trimmed == ">" {
 			continue
 		}
 		lines = append(lines, line)
@@ -113,7 +127,7 @@ func stripGoalsBoilerplate(s string) string {
 }
 
 // HasGoalHeaders checks if GOALS.md contains structured goal headers
-// (## [timestamp] from/scheduled:) as opposed to agent-written status text.
+// (## [timestamp] from/scheduled/self-directed:) as opposed to agent-written status text.
 func HasGoalHeaders(dir string) bool {
 	data, err := os.ReadFile(filepath.Join(dir, "GOALS.md"))
 	if err != nil {
@@ -277,6 +291,6 @@ func AppendScheduledGoal(dir, name, content string) error {
 	}
 	defer f.Close()
 	ts := time.Now().Format("2006-01-02 15:04")
-	_, err = fmt.Fprintf(f, "\n## [%s] scheduled: %s\n%s\n\n> Scheduled task. When complete, remove this goal. If you produce a deliverable, write it to DELIVER.md. If no other goals remain, write a comprehensive report of everything you accomplished as your final response, then create .exit to signal you are done.\n", ts, name, content)
+	_, err = fmt.Fprintf(f, "\n## [%s] scheduled: %s\n%s\n\n> Scheduled task. When complete, remove this goal. If your work reveals productive follow-up directions, add them as sub-goals. If no goals remain, create .exit.\n", ts, name, content)
 	return err
 }

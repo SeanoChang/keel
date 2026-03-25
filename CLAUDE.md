@@ -28,7 +28,7 @@ go test ./... -v
 
 Single Go binary. Filesystem is the protocol — no MCP, no custom IPC.
 
-- `internal/workspace/` — file I/O helpers for agent directories (GOALS.md, MEMORY.md, log.md, PROGRAM.md)
+- `internal/workspace/` — file I/O helpers for agent directories (GOALS.md, MEMORY.md, log.md, PROGRAM.md, DELIVER.md)
 - `internal/agent/` — Agent struct wrapping a workspace directory
 - `internal/loop/` — AgentLoop (runs `claude --agent`, heartbeat, graceful SIGTERM) + Manager (goroutine-per-agent)
 - `internal/config/` — TOML config for Discord channel-to-agent mappings and managed binary definitions
@@ -47,14 +47,17 @@ Add `[managed_binaries.<name>]` sections to run external update commands via Dis
 ## Agent Directory Layout
 
 Each agent is a directory under `~/.ark/agents-home/<name>/` with:
-- `GOALS.md` — objectives (human adds, agent removes when complete)
-- `PROGRAM.md` — instructions for how the agent should work
+- `GOALS.md` — objectives (human adds, agent removes when complete; agent also adds self-directed sub-goals via Reflect)
+- `PROGRAM.md` — instructions for how the agent should work (DefaultProgram includes Orient → Execute → Reflect → Log → Deliver → Continue/Exit)
 - `MEMORY.md` — agent-maintained working context
 - `log.md` — append-only accomplishment log
+- `DELIVER.md` — deliverable content relayed to Discord channel, cleared after delivery
 - `.claude/agents/<name>.md` — Claude Code agent definition
 - `schedule/` — self-scheduled future goals (see below)
-- `.exit` — sentinel file: agent creates when all goals are done (loop stops)
+- `.exit` — sentinel file: agent creates when all goals AND follow-up directions are exhausted (loop stops)
 - `.wrap-up` — sentinel file: `!wrap-up` creates to request graceful stop with archive
+
+Goals tagged `[quick]` are completed directly without follow-up branching. All other goals default to deep work with self-directed branching via the Reflect step.
 
 ## Schedule
 
