@@ -49,9 +49,10 @@ type AgentLoop struct {
 	Dir              string
 	CommandBuilder   CommandBuilder
 	SleepDuration    time.Duration
-	ArchiveEvery     int // run cubit archive every N sessions (0 = disabled)
-	MaxErrors        int // exit loop after N consecutive session errors (0 = default 3)
-	MaxStale         int // exit loop after N consecutive sessions with unchanged goals (0 = default 2)
+	ArchiveEvery     int           // run cubit archive every N sessions (0 = disabled)
+	MaxErrors        int           // exit loop after N consecutive session errors (0 = default 3)
+	MaxStale         int           // exit loop after N consecutive sessions with unchanged goals (0 = default 2)
+	StuckTimeout     time.Duration // kill session if no output events for this long (0 = default 90s)
 	OnOutput         func(event StreamEvent)
 	OnLifecycle      func(event string) // session_start, session_end, sleeping, woke, goals_empty, agent_exit, wrap_up, stale, stopped, too_many_errors, paused, resumed, eval_stopped, error:*
 	Wake             chan struct{}       // signal to interrupt sleep early (new goals arrived)
@@ -76,6 +77,13 @@ func (l *AgentLoop) maxStale() int {
 		return l.MaxStale
 	}
 	return 2
+}
+
+func (l *AgentLoop) stuckTimeout() time.Duration {
+	if l.StuckTimeout > 0 {
+		return l.StuckTimeout
+	}
+	return 90 * time.Second
 }
 
 func (l *AgentLoop) lifecycle(event string) {
@@ -144,6 +152,10 @@ func (l *AgentLoop) runStreaming(ctx context.Context, cmd *exec.Cmd) error {
 		return fmt.Errorf("start agent: %w", err)
 	}
 
+	// Track last real event time for stuck detection.
+	var lastEventNano atomic.Int64
+	lastEventNano.Store(time.Now().UnixNano())
+
 	var ioWg sync.WaitGroup
 	ioWg.Add(2)
 
@@ -153,6 +165,7 @@ func (l *AgentLoop) runStreaming(ctx context.Context, cmd *exec.Cmd) error {
 		scanner := bufio.NewScanner(stdout)
 		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 		for scanner.Scan() {
+			lastEventNano.Store(time.Now().UnixNano())
 			for _, ev := range ParseStreamJSON(scanner.Text()) {
 				if ev.Kind == EventResult {
 					// Safe: written before ioWg.Done(), read after RunOnce returns.
@@ -169,24 +182,38 @@ func (l *AgentLoop) runStreaming(ctx context.Context, cmd *exec.Cmd) error {
 		io.Copy(io.Discard, stderr)
 	}()
 
-	// Heartbeat: re-emit EventThinking every 60s so Discord message refreshes
-	// with elapsed time, helping users distinguish deep work from stuck processes.
+	// Heartbeat + stuck watchdog: re-emit EventThinking every 60s for UI refresh,
+	// and kill the process if no real output events arrive within StuckTimeout.
 	heartbeatDone := make(chan struct{})
 	if l.OnOutput != nil {
 		go func() {
 			start := time.Now()
-			ticker := time.NewTicker(60 * time.Second)
+			ticker := time.NewTicker(10 * time.Second)
 			defer ticker.Stop()
+			stuckLimit := l.stuckTimeout()
+			var lastHeartbeat time.Time
 			for {
 				select {
 				case <-heartbeatDone:
 					return
-				case <-ticker.C:
-					elapsed := time.Since(start).Round(time.Second)
-					l.OnOutput(StreamEvent{
-						Kind: EventThinking,
-						Text: fmt.Sprintf("(%s elapsed)", elapsed),
-					})
+				case now := <-ticker.C:
+					// Heartbeat: emit every 60s
+					if now.Sub(lastHeartbeat) >= 60*time.Second {
+						lastHeartbeat = now
+						elapsed := time.Since(start).Round(time.Second)
+						l.OnOutput(StreamEvent{
+							Kind: EventThinking,
+							Text: fmt.Sprintf("(%s elapsed)", elapsed),
+						})
+					}
+					// Stuck watchdog: kill if no real events for stuckLimit
+					last := time.Unix(0, lastEventNano.Load())
+					silent := now.Sub(last)
+					if silent >= stuckLimit {
+						log.Printf("[keel] %s: no output for %s, killing stuck session", l.Name, silent.Round(time.Second))
+						cmd.Process.Kill()
+						return
+					}
 				}
 			}
 		}()

@@ -30,7 +30,7 @@ Single Go binary. Filesystem is the protocol — no MCP, no custom IPC.
 
 - `internal/workspace/` — file I/O helpers for agent directories (GOALS.md, MEMORY.md, log.md, PROGRAM.md, DELIVER.md, INBOX.md)
 - `internal/agent/` — Agent struct wrapping a workspace directory
-- `internal/loop/` — AgentLoop (runs `claude --agent`, heartbeat, graceful SIGTERM) + Manager (goroutine-per-agent, pause/resume)
+- `internal/loop/` — AgentLoop (runs `claude --agent`, heartbeat, stuck watchdog, graceful SIGTERM) + Manager (goroutine-per-agent, pause/resume)
 - `internal/eval/` — EVAL.md parser and metric comparison for evaluation loops
 - `internal/config/` — TOML config for Discord channel-to-agent mappings and managed binary definitions
 - `internal/schedule/` — schedule scanning, cron matching, goal injection

@@ -61,7 +61,7 @@ echo "## Build the landing page" > ~/.ark/agents-home/noah/GOALS.md
 keel run noah
 ```
 
-Keel loops: read goals -> run `claude --agent` -> sleep -> repeat, until `GOALS.md` is empty.
+Keel loops: read goals -> run `claude --agent` -> sleep -> repeat, until `GOALS.md` is empty. Sessions that produce no output for 90 seconds are automatically killed and retried.
 
 ## Commands
 
@@ -249,7 +249,7 @@ Discord message
   -> config.ResolveChannel(channelID)
   -> workspace.AppendGoal(dir, user, message)
   -> loop.Manager.Start(agent, dir)
-      -> goroutine: while HasGoals -> RunOnce (exec claude --agent) -> checkEval -> sleep
+      -> goroutine: while HasGoals -> RunOnce (exec claude --agent, stuck watchdog) -> checkEval -> sleep
   -> tail.LogTailer watches log.md via fsnotify -> posts new lines back to Discord
 ```
 
@@ -260,7 +260,7 @@ Discord message
 | `cmd/` | Cobra CLI (run, serve, status, schedule, update) |
 | `internal/workspace/` | File I/O for GOALS.md, MEMORY.md, log.md, PROGRAM.md, DELIVER.md, INBOX.md |
 | `internal/agent/` | Agent struct wrapping a workspace directory |
-| `internal/loop/` | AgentLoop (outer while-loop, eval check, pause/resume) + Manager (goroutine-per-agent) |
+| `internal/loop/` | AgentLoop (outer while-loop, stuck watchdog, eval check, pause/resume) + Manager (goroutine-per-agent) |
 | `internal/eval/` | EVAL.md parser, metric comparison, budget/convergence detection |
 | `internal/config/` | TOML config parsing, channel-to-agent resolution |
 | `internal/schedule/` | Schedule scanning, cron matching, goal injection |
