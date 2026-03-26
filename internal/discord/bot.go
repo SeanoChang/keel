@@ -335,7 +335,7 @@ func (b *Bot) sessionHandlers(agentName, channelID, agentDir string) (onOutput f
 			progress.Update(msg)
 
 		case loop.EventText:
-			msg := fmt.Sprintf("**%s** — Responding...", agentName)
+			msg := fmt.Sprintf("**%s** — Thinking...", agentName)
 			if len(tools) > 0 {
 				msg += fmt.Sprintf("\n-# %d tools", len(tools))
 			}

@@ -18,7 +18,8 @@ type ProgressMessage struct {
 	lastEdit    time.Time
 	minInterval time.Duration
 	lastContent string
-	pending     string // buffered content waiting for next edit window
+	pending     string      // buffered content waiting for next edit window
+	flushTimer  *time.Timer // auto-flushes pending after throttle window
 }
 
 func NewProgressMessage(session *discordgo.Session, channelID string) *ProgressMessage {
@@ -45,16 +46,26 @@ func (p *ProgressMessage) Send(content string) error {
 
 // Update edits the message if enough time has passed since the last edit.
 // Skips duplicate content. Throttled to avoid Discord rate limits.
+// When throttled, schedules an auto-flush so the update is never silently lost.
 func (p *ProgressMessage) Update(content string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.messageID == "" || content == p.lastContent {
 		return
 	}
-	if time.Since(p.lastEdit) < p.minInterval {
+	elapsed := time.Since(p.lastEdit)
+	if elapsed < p.minInterval {
 		p.pending = content
+		// Schedule auto-flush for when the throttle window expires.
+		if p.flushTimer != nil {
+			p.flushTimer.Stop()
+		}
+		p.flushTimer = time.AfterFunc(p.minInterval-elapsed, func() {
+			p.Flush()
+		})
 		return
 	}
+	p.stopTimer()
 	p.doEdit(content)
 }
 
@@ -65,6 +76,7 @@ func (p *ProgressMessage) Finalize(content string) {
 	if p.messageID == "" {
 		return
 	}
+	p.stopTimer()
 	p.doEdit(content)
 	p.pending = ""
 }
@@ -73,6 +85,7 @@ func (p *ProgressMessage) Finalize(content string) {
 func (p *ProgressMessage) Flush() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.stopTimer()
 	if p.pending != "" && p.messageID != "" {
 		p.doEdit(p.pending)
 		p.pending = ""
@@ -84,6 +97,13 @@ func (p *ProgressMessage) MessageID() string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.messageID
+}
+
+func (p *ProgressMessage) stopTimer() {
+	if p.flushTimer != nil {
+		p.flushTimer.Stop()
+		p.flushTimer = nil
+	}
 }
 
 func (p *ProgressMessage) doEdit(content string) {

@@ -191,7 +191,7 @@ func (l *AgentLoop) runStreaming(ctx context.Context, cmd *exec.Cmd) error {
 			ticker := time.NewTicker(10 * time.Second)
 			defer ticker.Stop()
 			stuckLimit := l.stuckTimeout()
-			var lastHeartbeat time.Time
+			lastHeartbeat := start
 			for {
 				select {
 				case <-heartbeatDone:
