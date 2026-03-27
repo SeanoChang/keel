@@ -5,8 +5,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log"
+	"strings"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -18,6 +18,11 @@ import (
 	"github.com/SeanoChang/keel/internal/eval"
 	"github.com/SeanoChang/keel/internal/workspace"
 )
+
+// bootstrapPrompt is a short prompt that tells Claude to read its instructions from
+// disk rather than inlining the full PROGRAM.md. This produces fast first output
+// (file read tool calls) so the stuck watchdog sees liveness immediately.
+const bootstrapPrompt = "Read PROGRAM.md for your session instructions. Then read GOALS.md and INBOX.md, and follow the program."
 
 // CommandSpec describes a command to execute. Tests replace real claude with mocks.
 type CommandSpec struct {
@@ -52,7 +57,7 @@ type AgentLoop struct {
 	ArchiveEvery     int           // run cubit archive every N sessions (0 = disabled)
 	MaxErrors        int           // exit loop after N consecutive session errors (0 = default 3)
 	MaxStale         int           // exit loop after N consecutive sessions with unchanged goals (0 = default 2)
-	StuckTimeout     time.Duration // kill session if no output events for this long (0 = default 90s)
+	StuckTimeout     time.Duration // kill session if no output events for this long (0 = default 5m)
 	OnOutput         func(event StreamEvent)
 	OnLifecycle      func(event string) // session_start, session_end, sleeping, woke, goals_empty, agent_exit, wrap_up, stale, stopped, too_many_errors, paused, resumed, eval_stopped, error:*
 	Wake             chan struct{}       // signal to interrupt sleep early (new goals arrived)
@@ -83,7 +88,19 @@ func (l *AgentLoop) stuckTimeout() time.Duration {
 	if l.StuckTimeout > 0 {
 		return l.StuckTimeout
 	}
-	return 90 * time.Second
+	return 5 * time.Minute
+}
+
+// errorBackoff returns an exponential backoff duration: 30s, 60s, 120s... capped at 5 min.
+func (l *AgentLoop) errorBackoff(consecutive int) time.Duration {
+	d := 30 * time.Second
+	for i := 1; i < consecutive; i++ {
+		d *= 2
+	}
+	if d > 5*time.Minute {
+		d = 5 * time.Minute
+	}
+	return d
 }
 
 func (l *AgentLoop) lifecycle(event string) {
@@ -94,12 +111,11 @@ func (l *AgentLoop) lifecycle(event string) {
 
 // RunOnce executes one agent session.
 func (l *AgentLoop) RunOnce(ctx context.Context) error {
-	program, err := workspace.ReadProgram(l.Dir)
-	if err != nil {
-		return fmt.Errorf("read program: %w", err)
+	if err := workspace.EnsureProgram(l.Dir); err != nil {
+		return fmt.Errorf("ensure program: %w", err)
 	}
 
-	spec := l.CommandBuilder(ctx, l.Name, l.Dir, program)
+	spec := l.CommandBuilder(ctx, l.Name, l.Dir, bootstrapPrompt)
 
 	// When callbacks are active, use stream-json for structured event parsing.
 	if l.OnOutput != nil {
@@ -176,37 +192,38 @@ func (l *AgentLoop) runStreaming(ctx context.Context, cmd *exec.Cmd) error {
 		}
 	}()
 
-	// stderr → drain silently (stream-json puts everything on stdout)
+	// stderr → capture for diagnostics and track liveness (prevents false stuck kills)
+	var stderrMu sync.Mutex
+	var stderrLines []string
 	go func() {
 		defer ioWg.Done()
-		io.Copy(io.Discard, stderr)
+		scanner := bufio.NewScanner(stderr)
+		scanner.Buffer(make([]byte, 0, 64*1024), 256*1024)
+		for scanner.Scan() {
+			lastEventNano.Store(time.Now().UnixNano())
+			line := scanner.Text()
+			log.Printf("[keel] %s stderr: %s", l.Name, line)
+			stderrMu.Lock()
+			stderrLines = append(stderrLines, line)
+			if len(stderrLines) > 50 {
+				stderrLines = stderrLines[len(stderrLines)-50:]
+			}
+			stderrMu.Unlock()
+		}
 	}()
 
-	// Heartbeat + stuck watchdog: re-emit EventThinking every 60s for UI refresh,
-	// and kill the process if no real output events arrive within StuckTimeout.
-	heartbeatDone := make(chan struct{})
+	// Stuck watchdog: kill the process if no output events arrive within StuckTimeout.
+	watchdogDone := make(chan struct{})
 	if l.OnOutput != nil {
 		go func() {
-			start := time.Now()
-			ticker := time.NewTicker(10 * time.Second)
+			ticker := time.NewTicker(30 * time.Second)
 			defer ticker.Stop()
 			stuckLimit := l.stuckTimeout()
-			lastHeartbeat := start
 			for {
 				select {
-				case <-heartbeatDone:
+				case <-watchdogDone:
 					return
 				case now := <-ticker.C:
-					// Heartbeat: emit every 60s
-					if now.Sub(lastHeartbeat) >= 60*time.Second {
-						lastHeartbeat = now
-						elapsed := time.Since(start).Round(time.Second)
-						l.OnOutput(StreamEvent{
-							Kind: EventThinking,
-							Text: fmt.Sprintf("(%s elapsed)", elapsed),
-						})
-					}
-					// Stuck watchdog: kill if no real events for stuckLimit
 					last := time.Unix(0, lastEventNano.Load())
 					silent := now.Sub(last)
 					if silent >= stuckLimit {
@@ -220,11 +237,21 @@ func (l *AgentLoop) runStreaming(ctx context.Context, cmd *exec.Cmd) error {
 	}
 
 	ioWg.Wait()
-	close(heartbeatDone)
+	close(watchdogDone)
 
 	if err := cmd.Wait(); err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
+		}
+		stderrMu.Lock()
+		tail := stderrLines
+		if len(tail) > 5 {
+			tail = tail[len(tail)-5:]
+		}
+		stderrTail := strings.Join(tail, "\n")
+		stderrMu.Unlock()
+		if stderrTail != "" {
+			return fmt.Errorf("agent %s exited: %w\nstderr (last lines):\n%s", l.Name, err, stderrTail)
 		}
 		return fmt.Errorf("agent %s exited: %w", l.Name, err)
 	}
@@ -271,10 +298,21 @@ func (l *AgentLoop) Run(ctx context.Context) {
 				l.lifecycle("too_many_errors")
 				return
 			}
-		} else {
-			consecutiveErrors = 0
-			l.lifecycle("session_end")
+			// Exponential backoff after error. Not interruptible by Wake
+			// to prevent retry storms from Discord messages during cooldown.
+			backoff := l.errorBackoff(consecutiveErrors)
+			log.Printf("[keel] %s: backing off %s before retry", l.Name, backoff)
+			l.lifecycle(fmt.Sprintf("backoff: %s", backoff.Round(time.Second)))
+			select {
+			case <-ctx.Done():
+				l.lifecycle("stopped")
+				return
+			case <-time.After(backoff):
+			}
+			continue
 		}
+		consecutiveErrors = 0
+		l.lifecycle("session_end")
 
 		// Agent requested exit via sentinel file.
 		if workspace.HasExitSignal(l.Dir) {

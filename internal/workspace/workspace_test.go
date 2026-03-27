@@ -94,6 +94,35 @@ func TestReadProgramDefault(t *testing.T) {
 	}
 }
 
+func TestEnsureProgramCreatesDefault(t *testing.T) {
+	dir := t.TempDir()
+	// No PROGRAM.md exists yet
+	if err := EnsureProgram(dir); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "PROGRAM.md"))
+	if err != nil {
+		t.Fatal("expected PROGRAM.md to be created")
+	}
+	if !strings.Contains(string(data), "Session Program") {
+		t.Error("expected default program content")
+	}
+}
+
+func TestEnsureProgramPreservesExisting(t *testing.T) {
+	dir := t.TempDir()
+	custom := "Custom program content"
+	os.WriteFile(filepath.Join(dir, "PROGRAM.md"), []byte(custom), 0644)
+
+	if err := EnsureProgram(dir); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(filepath.Join(dir, "PROGRAM.md"))
+	if string(data) != custom {
+		t.Errorf("EnsureProgram overwrote existing file: got %q", string(data))
+	}
+}
+
 func TestReadLogTail(t *testing.T) {
 	dir := setupWorkspace(t)
 	lines, err := ReadLogTail(dir, 1)

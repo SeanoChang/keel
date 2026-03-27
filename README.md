@@ -61,7 +61,7 @@ echo "## Build the landing page" > ~/.ark/agents-home/noah/GOALS.md
 keel run noah
 ```
 
-Keel loops: read goals -> run `claude --agent` -> sleep -> repeat, until `GOALS.md` is empty. Sessions that produce no output for 90 seconds are automatically killed and retried.
+Keel loops: read goals -> run `claude --agent` -> sleep -> repeat, until `GOALS.md` is empty. Sessions that produce no output for 5 minutes are automatically killed and retried (with exponential backoff).
 
 ## Commands
 

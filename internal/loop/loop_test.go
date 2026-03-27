@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -727,5 +728,80 @@ func TestCheckEvalResultsDisabled(t *testing.T) {
 	}
 	if metricsUpdated {
 		t.Error("should not report metrics updated when eval disabled")
+	}
+}
+
+func TestErrorBackoff(t *testing.T) {
+	loop := &AgentLoop{Name: "test"}
+	tests := []struct {
+		consecutive int
+		want        time.Duration
+	}{
+		{1, 30 * time.Second},
+		{2, 60 * time.Second},
+		{3, 120 * time.Second},
+		{4, 240 * time.Second},
+		{5, 5 * time.Minute}, // capped
+		{10, 5 * time.Minute},
+	}
+	for _, tt := range tests {
+		got := loop.errorBackoff(tt.consecutive)
+		if got != tt.want {
+			t.Errorf("errorBackoff(%d) = %v, want %v", tt.consecutive, got, tt.want)
+		}
+	}
+}
+
+func TestLoopErrorBackoffEmitsLifecycle(t *testing.T) {
+	dir := setupTestAgent(t)
+
+	var mu sync.Mutex
+	var events []string
+
+	loop := &AgentLoop{
+		Name: "test",
+		Dir:  dir,
+		CommandBuilder: func(ctx context.Context, name, dir, program string) *CommandSpec {
+			return &CommandSpec{
+				Name: "bash",
+				Args: []string{"-c", "exit 1"},
+				Dir:  dir,
+			}
+		},
+		SleepDuration: 10 * time.Millisecond,
+		MaxErrors:     2,
+		OnLifecycle: func(event string) {
+			mu.Lock()
+			events = append(events, event)
+			mu.Unlock()
+		},
+		Wake: make(chan struct{}, 1),
+	}
+
+	// Context shorter than 30s backoff — loop will cancel during backoff.
+	// We just verify the backoff lifecycle event fires.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	loop.Run(ctx)
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	foundError := false
+	foundBackoff := false
+	for _, ev := range events {
+		if strings.HasPrefix(ev, "error:") {
+			foundError = true
+		}
+		if strings.HasPrefix(ev, "backoff:") {
+			foundBackoff = true
+		}
+	}
+	if !foundError {
+		t.Errorf("expected error lifecycle event, got: %v", events)
+	}
+	if !foundBackoff {
+		t.Errorf("expected backoff lifecycle event, got: %v", events)
 	}
 }

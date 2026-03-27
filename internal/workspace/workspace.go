@@ -164,6 +164,18 @@ func WriteDefaultProgram(dir string) error {
 	return os.WriteFile(filepath.Join(dir, "PROGRAM.md"), []byte(DefaultProgram+"\n"), 0644)
 }
 
+// EnsureProgram writes the default PROGRAM.md if the file doesn't exist on disk.
+func EnsureProgram(dir string) error {
+	path := filepath.Join(dir, "PROGRAM.md")
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			return WriteDefaultProgram(dir)
+		}
+		return err
+	}
+	return nil
+}
+
 func ReadProgram(dir string) (string, error) {
 	data, err := os.ReadFile(filepath.Join(dir, "PROGRAM.md"))
 	if err != nil {
