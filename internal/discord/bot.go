@@ -231,7 +231,7 @@ func (b *Bot) sessionHandlers(agentName, channelID, agentDir string) (onOutput f
 				progress.Finalize(fmt.Sprintf("**%s** — Too many errors. Loop stopped.", agentName))
 				progress = nil
 			}
-			b.sendStatus(agentName, "Too many errors — loop stopped")
+			b.sendError(agentName, "Too many errors — loop stopped")
 			b.sendDelivery(b.session, channelID, agentName, agentDir)
 
 		case "wrap_up":
@@ -283,14 +283,16 @@ func (b *Bot) sessionHandlers(agentName, channelID, agentDir string) (onOutput f
 			b.sendDelivery(b.session, channelID, agentName, agentDir)
 
 		default:
-			if strings.HasPrefix(event, "error:") {
+			if strings.HasPrefix(event, "error:") || strings.HasPrefix(event, "backoff:") {
 				if progress != nil {
 					progress.Flush()
 					progress.Finalize(fmt.Sprintf("**%s** — %s", agentName, event))
 					progress = nil
 				}
+				b.sendError(agentName, event)
+			} else {
+				b.sendStatus(agentName, event)
 			}
-			b.sendStatus(agentName, event)
 		}
 	}
 
@@ -408,6 +410,22 @@ func sessionStats(toolCount int, cost float64, durationMs int64) string {
 		parts = append(parts, fmt.Sprintf("%ds", durationMs/1000))
 	}
 	return "(" + strings.Join(parts, ", ") + ")"
+}
+
+// sendError sends an error event to the error channel (if configured), otherwise status channel.
+func (b *Bot) sendError(agentName, event string) {
+	channelID := b.cfg.Bot.ErrorChannelID
+	if channelID == "" {
+		channelID = b.cfg.Bot.StatusChannelID
+	}
+	if channelID == "" {
+		return
+	}
+	ts := time.Now().Format("2006-01-02 15:04:05")
+	msg := fmt.Sprintf("`[%s - %s]` %s", ts, agentName, event)
+	if _, err := b.session.ChannelMessageSend(channelID, msg); err != nil {
+		log.Printf("[keel] %s: error send error: %v", agentName, err)
+	}
 }
 
 // sendStatus sends a short event to the status channel (if configured).

@@ -4,6 +4,7 @@
 token_env = "DISCORD_BOT_TOKEN"    # env var name containing the bot token
 guild_id = "YOUR_GUILD_ID"
 status_channel_id = ""              # optional: broadcast channel for all agents
+error_channel_id = ""               # optional: dedicated channel for errors/retries (falls back to status)
 admin_users = []                    # Discord user IDs allowed to interact (empty = everyone)
 plist_label = ""                    # launchd label for restart (e.g. "com.keel.serve")
 

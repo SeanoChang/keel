@@ -21,7 +21,7 @@ import (
 
 // bootstrapPrompt is a short prompt that tells Claude to read its instructions from
 // disk rather than inlining the full PROGRAM.md. This produces fast first output
-// (file read tool calls) so the stuck watchdog sees liveness immediately.
+// (file read tool calls) which keeps Discord progress messages responsive.
 const bootstrapPrompt = "Read PROGRAM.md for your session instructions. Then read GOALS.md and INBOX.md, and follow the program."
 
 // CommandSpec describes a command to execute. Tests replace real claude with mocks.
@@ -57,7 +57,6 @@ type AgentLoop struct {
 	ArchiveEvery     int           // run cubit archive every N sessions (0 = disabled)
 	MaxErrors        int           // exit loop after N consecutive session errors (0 = default 3)
 	MaxStale         int           // exit loop after N consecutive sessions with unchanged goals (0 = default 2)
-	StuckTimeout     time.Duration // kill session if no output events for this long (0 = default 5m)
 	OnOutput         func(event StreamEvent)
 	OnLifecycle      func(event string) // session_start, session_end, sleeping, woke, goals_empty, agent_exit, wrap_up, stale, stopped, too_many_errors, paused, resumed, eval_stopped, error:*
 	Wake             chan struct{}       // signal to interrupt sleep early (new goals arrived)
@@ -82,13 +81,6 @@ func (l *AgentLoop) maxStale() int {
 		return l.MaxStale
 	}
 	return 2
-}
-
-func (l *AgentLoop) stuckTimeout() time.Duration {
-	if l.StuckTimeout > 0 {
-		return l.StuckTimeout
-	}
-	return 5 * time.Minute
 }
 
 // errorBackoff returns an exponential backoff duration: 30s, 60s, 120s... capped at 5 min.
@@ -168,10 +160,6 @@ func (l *AgentLoop) runStreaming(ctx context.Context, cmd *exec.Cmd) error {
 		return fmt.Errorf("start agent: %w", err)
 	}
 
-	// Track last real event time for stuck detection.
-	var lastEventNano atomic.Int64
-	lastEventNano.Store(time.Now().UnixNano())
-
 	var ioWg sync.WaitGroup
 	ioWg.Add(2)
 
@@ -181,7 +169,6 @@ func (l *AgentLoop) runStreaming(ctx context.Context, cmd *exec.Cmd) error {
 		scanner := bufio.NewScanner(stdout)
 		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 		for scanner.Scan() {
-			lastEventNano.Store(time.Now().UnixNano())
 			for _, ev := range ParseStreamJSON(scanner.Text()) {
 				if ev.Kind == EventResult {
 					// Safe: written before ioWg.Done(), read after RunOnce returns.
@@ -192,7 +179,7 @@ func (l *AgentLoop) runStreaming(ctx context.Context, cmd *exec.Cmd) error {
 		}
 	}()
 
-	// stderr → capture for diagnostics and track liveness (prevents false stuck kills)
+	// stderr → capture for diagnostics
 	var stderrMu sync.Mutex
 	var stderrLines []string
 	go func() {
@@ -200,7 +187,6 @@ func (l *AgentLoop) runStreaming(ctx context.Context, cmd *exec.Cmd) error {
 		scanner := bufio.NewScanner(stderr)
 		scanner.Buffer(make([]byte, 0, 64*1024), 256*1024)
 		for scanner.Scan() {
-			lastEventNano.Store(time.Now().UnixNano())
 			line := scanner.Text()
 			log.Printf("[keel] %s stderr: %s", l.Name, line)
 			stderrMu.Lock()
@@ -212,32 +198,7 @@ func (l *AgentLoop) runStreaming(ctx context.Context, cmd *exec.Cmd) error {
 		}
 	}()
 
-	// Stuck watchdog: kill the process if no output events arrive within StuckTimeout.
-	watchdogDone := make(chan struct{})
-	if l.OnOutput != nil {
-		go func() {
-			ticker := time.NewTicker(30 * time.Second)
-			defer ticker.Stop()
-			stuckLimit := l.stuckTimeout()
-			for {
-				select {
-				case <-watchdogDone:
-					return
-				case now := <-ticker.C:
-					last := time.Unix(0, lastEventNano.Load())
-					silent := now.Sub(last)
-					if silent >= stuckLimit {
-						log.Printf("[keel] %s: no output for %s, killing stuck session", l.Name, silent.Round(time.Second))
-						cmd.Process.Kill()
-						return
-					}
-				}
-			}
-		}()
-	}
-
 	ioWg.Wait()
-	close(watchdogDone)
 
 	if err := cmd.Wait(); err != nil {
 		if ctx.Err() != nil {

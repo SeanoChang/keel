@@ -11,8 +11,9 @@ type BotConfig struct {
 	TokenEnv        string   `toml:"token_env"`
 	GuildID         string   `toml:"guild_id"`
 	StatusChannelID string   `toml:"status_channel_id"`
-	AdminUsers      []string `toml:"admin_users"`   // Discord user IDs allowed to interact
-	PlistLabel      string   `toml:"plist_label"`   // launchd label for restart (e.g. "com.keel.serve")
+	ErrorChannelID  string   `toml:"error_channel_id"`  // optional: channel for error/retry events
+	AdminUsers      []string `toml:"admin_users"`        // Discord user IDs allowed to interact
+	PlistLabel      string   `toml:"plist_label"`        // launchd label for restart (e.g. "com.keel.serve")
 }
 
 type ChannelConfig struct {
