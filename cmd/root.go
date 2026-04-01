@@ -42,6 +42,11 @@ func init() {
 	scheduleClearCmd.Flags().StringVar(&scheduleClearDir, "dir", "", "Agent directory override")
 	scheduleCmd.AddCommand(scheduleAddCmd, scheduleLsCmd, scheduleRmCmd, scheduleClearCmd)
 	rootCmd.AddCommand(scheduleCmd)
+
+	// doctor
+	doctorCmd.Flags().StringVar(&doctorConfigPath, "config", "config/discord.toml", "Path to config file")
+	doctorCmd.Flags().StringVar(&doctorAgent, "agent", "", "Check a single agent only")
+	rootCmd.AddCommand(doctorCmd)
 }
 
 func Execute() {
