@@ -254,6 +254,13 @@ func (l *AgentLoop) Run(ctx context.Context) {
 			consecutiveErrors++
 			log.Printf("[keel] %s: session error (%d/%d): %v", l.Name, consecutiveErrors, l.maxErrors(), err)
 			l.lifecycle(fmt.Sprintf("error: %v (%d/%d)", err, consecutiveErrors, l.maxErrors()))
+
+			// Write error context to INBOX so the agent can adapt next session.
+			errMsg := fmt.Sprintf("[error] Session failed (attempt %d/%d)\nerror: %v\n---\nAdapt your approach if this looks like something you can work around. If this is a transient issue (rate limit, network), it may resolve on its own.",
+				consecutiveErrors, l.maxErrors(), err)
+			if writeErr := workspace.AppendInbox(l.Dir, true, "keel", errMsg); writeErr != nil {
+				log.Printf("[keel] %s: failed to write error to INBOX: %v", l.Name, writeErr)
+			}
 			if consecutiveErrors >= l.maxErrors() {
 				log.Printf("[keel] %s: too many consecutive errors, exiting loop", l.Name)
 				l.lifecycle("too_many_errors")

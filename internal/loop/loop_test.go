@@ -804,4 +804,10 @@ func TestLoopErrorBackoffEmitsLifecycle(t *testing.T) {
 	if !foundBackoff {
 		t.Errorf("expected backoff lifecycle event, got: %v", events)
 	}
+
+	// Verify error context was written to INBOX.md
+	inbox, _ := os.ReadFile(filepath.Join(dir, "INBOX.md"))
+	if !strings.Contains(string(inbox), "[error] Session failed") {
+		t.Errorf("expected error context in INBOX.md, got: %q", string(inbox))
+	}
 }
