@@ -25,63 +25,60 @@ var migrateConfigCmd = &cobra.Command{
 
 		// Per-channel fields to ensure exist
 		channelFields := []struct {
-			key          string
-			defaultLine  string
+			key         string
+			defaultLine string
 		}{
 			{"model", `# model = "sonnet"                    # optional: opus, sonnet, haiku`},
 		}
 
-		// Find all [channels.*] sections and add missing fields
+		// Process line by line, inserting missing fields after each [channels.*] section's last key
 		lines := strings.Split(content, "\n")
 		var result []string
+
 		for i := 0; i < len(lines); i++ {
-			result = append(result, lines[i])
 			trimmed := strings.TrimSpace(lines[i])
 
 			// Detect [channels.<name>] section headers
 			if !strings.HasPrefix(trimmed, "[channels.") || !strings.HasSuffix(trimmed, "]") {
+				result = append(result, lines[i])
 				continue
 			}
 
-			// Collect existing keys in this section (until next section or EOF)
+			// Found a channel section — collect all lines until next section
+			sectionHeader := trimmed
+			result = append(result, lines[i])
+
+			// Scan ahead to find section bounds and existing keys
 			sectionKeys := make(map[string]bool)
+			var sectionLines []string
 			j := i + 1
 			for j < len(lines) {
 				line := strings.TrimSpace(lines[j])
 				if strings.HasPrefix(line, "[") {
 					break
 				}
-				// Extract key from "key = value" or "# key = value"
 				cleaned := strings.TrimPrefix(line, "#")
 				cleaned = strings.TrimSpace(cleaned)
 				if parts := strings.SplitN(cleaned, "=", 2); len(parts) == 2 {
 					sectionKeys[strings.TrimSpace(parts[0])] = true
 				}
+				sectionLines = append(sectionLines, lines[j])
 				j++
 			}
 
-			// Add missing fields after the last key-value line of this section
+			// Append section lines to result
+			result = append(result, sectionLines...)
+
+			// Add missing fields at end of section (before blank trailing lines)
 			for _, f := range channelFields {
 				if !sectionKeys[f.key] {
-					// Find insertion point: after last non-empty, non-section line
-					insertAt := i + 1
-					for k := i + 1; k < j; k++ {
-						line := strings.TrimSpace(lines[k])
-						if line != "" && !strings.HasPrefix(line, "[") {
-							insertAt = k + 1
-						}
-					}
-					// Insert relative to result (offset by already-added lines)
-					offset := len(result) - (i + 1)
-					pos := insertAt - (i + 1) + offset + (i + 1)
-					newResult := make([]string, 0, len(result)+1)
-					newResult = append(newResult, result[:pos]...)
-					newResult = append(newResult, f.defaultLine)
-					newResult = append(newResult, result[pos:]...)
-					result = newResult
-					added = append(added, fmt.Sprintf("  %s → %s", trimmed, f.key))
+					result = append(result, f.defaultLine)
+					added = append(added, fmt.Sprintf("  %s → %s", sectionHeader, f.key))
 				}
 			}
+
+			// Skip past the section lines we already consumed
+			i = j - 1
 		}
 
 		content = strings.Join(result, "\n")
