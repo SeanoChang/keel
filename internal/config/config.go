@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 )
@@ -67,6 +68,67 @@ func (c *Config) ResolveSetupChannel() string {
 		return ch.ChannelID
 	}
 	return ""
+}
+
+// SetChannelField updates a field in a [channels.<name>] section of the TOML config file.
+// Preserves formatting and comments. Adds the field if missing, updates if present.
+func SetChannelField(configPath, channelName, key, value string) error {
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return fmt.Errorf("read config: %w", err)
+	}
+
+	lines := strings.Split(string(data), "\n")
+	header := fmt.Sprintf("[channels.%s]", channelName)
+	newLine := fmt.Sprintf("%s = %q", key, value)
+
+	var result []string
+	found := false
+
+	for i := 0; i < len(lines); i++ {
+		trimmed := strings.TrimSpace(lines[i])
+		result = append(result, lines[i])
+
+		if trimmed != header {
+			continue
+		}
+
+		// In the target section — scan for existing key or end of section
+		found = true
+		keyUpdated := false
+		j := i + 1
+		for j < len(lines) {
+			line := strings.TrimSpace(lines[j])
+			if strings.HasPrefix(line, "[") {
+				break
+			}
+			// Check if this line sets the key (active or commented)
+			if !keyUpdated {
+				cleaned := strings.TrimPrefix(line, "#")
+				cleaned = strings.TrimSpace(cleaned)
+				if parts := strings.SplitN(cleaned, "=", 2); len(parts) == 2 && strings.TrimSpace(parts[0]) == key {
+					// Replace this line with the new value
+					result = append(result, newLine)
+					keyUpdated = true
+					j++
+					continue
+				}
+			}
+			result = append(result, lines[j])
+			j++
+		}
+		if !keyUpdated {
+			// Key not found in section — append before next section
+			result = append(result, newLine)
+		}
+		i = j - 1
+	}
+
+	if !found {
+		return fmt.Errorf("channel section %s not found in config", header)
+	}
+
+	return os.WriteFile(configPath, []byte(strings.Join(result, "\n")), 0644)
 }
 
 func Load(path string) (*Config, error) {

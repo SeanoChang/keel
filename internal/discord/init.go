@@ -309,6 +309,17 @@ func (is *InitSession) cleanup() {
 	log.Printf("[keel] init: cleaned up agent dir %s", is.agentDir)
 }
 
+// Cancel aborts the init session and cleans up.
+func (is *InitSession) Cancel() {
+	is.mu.Lock()
+	defer is.mu.Unlock()
+	if is.phase == phaseDone {
+		return
+	}
+	is.cleanup()
+	is.phase = phaseDone
+}
+
 // IsDone returns true when the init flow has completed or been cancelled.
 func (is *InitSession) IsDone() bool {
 	is.mu.Lock()

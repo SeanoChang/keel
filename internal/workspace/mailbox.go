@@ -96,3 +96,13 @@ func LogMailboxEvent(dir, from, msgType, subject string) error {
 	_, err = fmt.Fprintf(f, "[%s] received %s from %s: %s\n", ts, msgType, from, subject)
 	return err
 }
+
+// EnsureAskDirs creates the ask queue directory tree if missing.
+func EnsureAskDirs(dir string) error {
+	for _, sub := range []string{"asks/pending", "asks/done"} {
+		if err := os.MkdirAll(filepath.Join(dir, sub), 0755); err != nil {
+			return fmt.Errorf("create %s: %w", sub, err)
+		}
+	}
+	return nil
+}

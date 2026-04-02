@@ -22,13 +22,13 @@ import (
 type Bot struct {
 	session         *discordgo.Session
 	cfg             *config.Config
+	cfgMu           sync.RWMutex // guards b.cfg.Channels writes (set-model)
 	loopMgr         *loop.Manager
 	tailers         map[string]*LogTailer
 	mailboxWatchers map[string]*MailboxWatcher
+	askWatcher      *AskWatcher
 	sleepBetween    time.Duration
 	archiveEvery    int
-	modelsMu        sync.RWMutex
-	models          map[string]string // per-agent model override (empty = default)
 	schedStop       chan struct{}      // signals scheduler goroutine to stop
 	schedDone       chan struct{}      // closed when scheduler goroutine exits
 	lastDreamDate   string            // "2006-01-02" — prevents double-fire
@@ -56,7 +56,6 @@ func NewBot(cfg *config.Config, configPath string, sleepBetween time.Duration, a
 		loopMgr:         loop.NewManager(),
 		tailers:         make(map[string]*LogTailer),
 		mailboxWatchers: make(map[string]*MailboxWatcher),
-		models:          make(map[string]string),
 		sleepBetween:    sleepBetween,
 		archiveEvery:    archiveEvery,
 		schedStop:       make(chan struct{}),
@@ -97,6 +96,21 @@ func (b *Bot) Start() error {
 		go mw.Start()
 	}
 
+	// Start ask watcher for all agents
+	askDirs := make(map[string]string)
+	for name, ch := range b.cfg.Channels {
+		if err := workspace.EnsureAskDirs(ch.AgentDir); err != nil {
+			log.Printf("[keel] %s: error creating ask dirs: %v", name, err)
+		}
+		askDirs[name] = ch.AgentDir
+	}
+	if aw, err := NewAskWatcher(askDirs); err != nil {
+		log.Printf("[keel] ask watcher init error: %v", err)
+	} else {
+		b.askWatcher = aw
+		go aw.Start()
+	}
+
 	go b.runScheduler()
 
 	// Start init watcher for cubit init --keel
@@ -133,6 +147,9 @@ func (b *Bot) Stop() {
 	}
 	for _, mw := range b.mailboxWatchers {
 		mw.Stop()
+	}
+	if b.askWatcher != nil {
+		b.askWatcher.Stop()
 	}
 	if b.initWatcher != nil {
 		b.initWatcher.Stop()
@@ -180,20 +197,16 @@ func ResolveModel(name string) string {
 	return ""
 }
 
-// commandBuilder returns a CommandBuilder that injects the agent's model override.
-// Priority: runtime override (!set-model) > config default > no --model flag.
+// commandBuilder returns a CommandBuilder that injects the agent's model from config.
 func (b *Bot) commandBuilder(agentName string) loop.CommandBuilder {
 	return func(ctx context.Context, name, dir, program string) *loop.CommandSpec {
 		spec := loop.DefaultCommandBuilder(ctx, name, dir, program)
-		// Check runtime override first, then config default
-		b.modelsMu.RLock()
-		model := b.models[agentName]
-		b.modelsMu.RUnlock()
-		if model == "" {
-			if ch, ok := b.cfg.Channels[agentName]; ok {
-				model = ch.Model
-			}
+		b.cfgMu.RLock()
+		model := ""
+		if ch, ok := b.cfg.Channels[agentName]; ok {
+			model = ch.Model
 		}
+		b.cfgMu.RUnlock()
 		if modelID := ResolveModel(model); modelID != "" {
 			spec.Args = append(spec.Args, "--model", modelID)
 		}
@@ -260,14 +273,35 @@ func (b *Bot) onMessageCreate(s *discordgo.Session, m *discordgo.MessageCreate) 
 			b.initMu.Unlock()
 		}
 
-		// Parse !init command in setup channel
-		if isCmd, cmd, args := ParseCommand(content); isCmd && cmd == "init" {
-			b.handleInitCommand(s, m, args)
-			return
+		// Parse setup-channel commands
+		if isCmd, cmd, args := ParseCommand(content); isCmd {
+			switch cmd {
+			case "init":
+				b.handleInitCommand(s, m, args)
+				return
+			case "quit":
+				b.initMu.Lock()
+				if b.initSession != nil && !b.initSession.IsDone() {
+					b.initSession.Cancel()
+					b.initSession = nil
+					b.initMu.Unlock()
+					b.reply(s, m, "Init cancelled.")
+				} else {
+					b.initMu.Unlock()
+					b.reply(s, m, "No active init to cancel.")
+				}
+				return
+			}
 		}
 
-		// Other ! commands or messages in setup channel — fall through to normal routing
-		// (setup channel might also be an agent channel for migration)
+		// If setup channel is NOT also an agent channel, handle gracefully
+		if _, _, ok := b.cfg.ResolveChannel(m.ChannelID); !ok {
+			if isCmd, _, _ := ParseCommand(content); isCmd {
+				b.reply(s, m, "This is the setup channel. Use `!init <name>` to create an agent, or send commands in an agent channel.")
+			}
+			return
+		}
+		// Fall through to normal agent routing if setup channel is also an agent channel
 	}
 
 	agentName, ch, ok := b.cfg.ResolveChannel(m.ChannelID)

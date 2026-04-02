@@ -169,3 +169,24 @@ func TestLogMailboxEvent(t *testing.T) {
 		t.Errorf("expected 2 log lines, got %d", len(lines))
 	}
 }
+
+func TestEnsureAskDirs(t *testing.T) {
+	dir := t.TempDir()
+	if err := EnsureAskDirs(dir); err != nil {
+		t.Fatal(err)
+	}
+	for _, sub := range []string{"asks/pending", "asks/done"} {
+		path := filepath.Join(dir, sub)
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Errorf("expected %s to exist: %v", sub, err)
+			continue
+		}
+		if !info.IsDir() {
+			t.Errorf("expected %s to be a directory", sub)
+		}
+	}
+	if err := EnsureAskDirs(dir); err != nil {
+		t.Errorf("second call should be idempotent: %v", err)
+	}
+}

@@ -306,13 +306,9 @@ func (b *Bot) cmdDream(s *discordgo.Session, m *discordgo.MessageCreate, agentNa
 
 func (b *Bot) cmdSetModel(agentName, args string) string {
 	if args == "" {
-		b.modelsMu.RLock()
-		current := b.models[agentName]
-		b.modelsMu.RUnlock()
-		if current == "" {
-			if ch, ok := b.cfg.Channels[agentName]; ok {
-				current = ch.Model
-			}
+		current := ""
+		if ch, ok := b.cfg.Channels[agentName]; ok {
+			current = ch.Model
 		}
 		if current == "" {
 			current = "default"
@@ -327,19 +323,28 @@ func (b *Bot) cmdSetModel(agentName, args string) string {
 	}
 	model := strings.ToLower(strings.TrimSpace(args))
 	if model == "default" || model == "reset" {
-		b.modelsMu.Lock()
-		delete(b.models, agentName)
-		b.modelsMu.Unlock()
-		return fmt.Sprintf("Model reset to default for **%s**.", agentName)
-	}
-	if ResolveModel(model) == "" {
+		model = ""
+	} else if ResolveModel(model) == "" {
 		return fmt.Sprintf("Unknown model `%s`. Available: `opus` (`%s`), `sonnet` (`%s`), `haiku` (`%s`)",
 			args, ResolveModel("opus"), ResolveModel("sonnet"), ResolveModel("haiku"))
 	}
-	b.modelsMu.Lock()
-	b.models[agentName] = model
-	b.modelsMu.Unlock()
-	return fmt.Sprintf("Model set to `%s` for **%s**. Takes effect next session.", model, agentName)
+	// Write to config file (source of truth)
+	if b.configPath != "" {
+		if err := config.SetChannelField(b.configPath, agentName, "model", model); err != nil {
+			return fmt.Sprintf("Error updating config: %v", err)
+		}
+	}
+	// Update in-memory config so commandBuilder picks it up immediately
+	b.cfgMu.Lock()
+	if ch, ok := b.cfg.Channels[agentName]; ok {
+		ch.Model = model
+		b.cfg.Channels[agentName] = ch
+	}
+	b.cfgMu.Unlock()
+	if model == "" {
+		return fmt.Sprintf("Model reset to default for **%s**. Takes effect next session.", agentName)
+	}
+	return fmt.Sprintf("Model set to `%s` (`%s`) for **%s**. Takes effect next session.", model, ResolveModel(model), agentName)
 }
 
 func (b *Bot) cmdClear(ch config.ChannelConfig, name string) string {
