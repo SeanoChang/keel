@@ -22,7 +22,7 @@ import (
 // bootstrapPrompt is a short prompt that tells Claude to read its instructions from
 // disk rather than inlining the full PROGRAM.md. This produces fast first output
 // (file read tool calls) which keeps Discord progress messages responsive.
-const bootstrapPrompt = "Read PROGRAM.md for your session instructions. Then read GOALS.md and INBOX.md, and follow the program."
+const bootstrapPrompt = "Read PROGRAM.md for your session instructions. Then read GOALS.md, scan mailbox/inbox/ for messages, and follow the program."
 
 // CommandSpec describes a command to execute. Tests replace real claude with mocks.
 type CommandSpec struct {
@@ -234,8 +234,8 @@ func (l *AgentLoop) Run(ctx context.Context) {
 			l.lifecycle("stopped")
 			return
 		}
-		if !workspace.HasGoals(l.Dir) {
-			log.Printf("[keel] %s: no goals, loop exiting", l.Name)
+		if !workspace.HasGoals(l.Dir) && !workspace.HasMailboxMessages(l.Dir) {
+			log.Printf("[keel] %s: no goals or messages, loop exiting", l.Name)
 			l.lifecycle("goals_empty")
 			return
 		}
@@ -255,11 +255,11 @@ func (l *AgentLoop) Run(ctx context.Context) {
 			log.Printf("[keel] %s: session error (%d/%d): %v", l.Name, consecutiveErrors, l.maxErrors(), err)
 			l.lifecycle(fmt.Sprintf("error: %v (%d/%d)", err, consecutiveErrors, l.maxErrors()))
 
-			// Write error context to INBOX so the agent can adapt next session.
+			// Write error context to mailbox so the agent can adapt next session.
 			errMsg := fmt.Sprintf("[error] Session failed (attempt %d/%d)\nerror: %v\n---\nAdapt your approach if this looks like something you can work around. If this is a transient issue (rate limit, network), it may resolve on its own.",
 				consecutiveErrors, l.maxErrors(), err)
-			if writeErr := workspace.AppendInbox(l.Dir, true, "keel", errMsg); writeErr != nil {
-				log.Printf("[keel] %s: failed to write error to INBOX: %v", l.Name, writeErr)
+			if writeErr := workspace.WriteMailboxMessage(l.Dir, "keel", "Session error", "important", "notification", errMsg); writeErr != nil {
+				log.Printf("[keel] %s: failed to write error to mailbox: %v", l.Name, writeErr)
 			}
 			if consecutiveErrors >= l.maxErrors() {
 				log.Printf("[keel] %s: too many consecutive errors, exiting loop", l.Name)
@@ -349,9 +349,9 @@ func (l *AgentLoop) Run(ctx context.Context) {
 			staleCount = 0
 		}
 
-		// Quick exit if goals were cleared during session (avoids unnecessary sleep).
-		if !workspace.HasGoals(l.Dir) {
-			log.Printf("[keel] %s: goals cleared during session, loop exiting", l.Name)
+		// Quick exit if goals were cleared and no new messages during session.
+		if !workspace.HasGoals(l.Dir) && !workspace.HasMailboxMessages(l.Dir) {
+			log.Printf("[keel] %s: no goals or messages remaining, loop exiting", l.Name)
 			l.lifecycle("goals_empty")
 			return
 		}
@@ -468,11 +468,12 @@ func (l *AgentLoop) checkEvalResults(metricsUpdated *bool) bool {
 			l.emitEvalUpdate(p.Name(), "improved", state, metric.Value)
 		} else {
 			state.NoImproveCount++
-			// Inject regression context into INBOX.md so the agent can decide how to respond.
+			// Inject regression context into mailbox so the agent can decide how to respond.
 			msg := fmt.Sprintf("Eval regression in project %s: %s went from %.4f to %.4f (best: %.4f, baseline: %.4f). Consider reverting, adjusting your approach, or trying a different strategy.",
 				p.Name(), cfg.Metric, state.Previous, metric.Value, state.Best, cfg.Baseline)
-			if err := workspace.AppendInbox(l.Dir, true, "keel", msg); err != nil {
-				log.Printf("[keel] %s: error writing regression to INBOX.md: %v", l.Name, err)
+			subject := fmt.Sprintf("Eval regression in %s", p.Name())
+			if err := workspace.WriteMailboxMessage(l.Dir, "keel", subject, "important", "notification", msg); err != nil {
+				log.Printf("[keel] %s: error writing regression to mailbox: %v", l.Name, err)
 			}
 			l.emitEvalUpdate(p.Name(), "regressed", state, metric.Value)
 		}

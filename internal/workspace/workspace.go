@@ -12,7 +12,12 @@ const DefaultProgram = `# Session Program
 
 ## Orient
 Read GOALS.md. Identify the highest-priority goal. Read MEMORY.md for prior context.
-Check INBOX.md for messages from the user. Handle priority items before continuing with goals. Clear handled items from INBOX.md. If no INBOX.md exists, skip this step.
+Scan mailbox: run eza -lT mailbox/inbox/ to see unread messages.
+Triage: read any messages found, decide what to act on.
+- Add to GOALS.md if actionable
+- Move to mailbox/starred/ if relevant but not urgent
+- Move to mailbox/read/ if just informational
+Process goals (user goals first, then agent-originated). If no messages exist, skip triage.
 
 ## Execute
 Work the goal thoroughly. Default to deep, rigorous work.
@@ -55,6 +60,20 @@ You can self-schedule future goals by creating files in your schedule/ directory
 - Recurring: schedule/cron-<min>_<hour>_<dom>_<mon>_<dow>/<name>.md (e.g. schedule/cron-0_9_*_*_1-5/morning-brief.md)
 The file content becomes the goal text injected into GOALS.md when the schedule fires.
 One-shot dirs are deleted after firing. Recurring dirs persist.
+
+## Messaging
+To message another agent:
+1. Write message to mailbox/drafts/<any-name>.md with frontmatter:
+   ---
+   from: <your-name>
+   to: <target-agent>
+   subject: <clear subject line>
+   category: all|priority|important
+   type: notification|request|handoff
+   ---
+   <body>
+2. Run: cubit send mailbox/drafts/<filename>.md
+Messages are async — send and move on. Do not wait for responses.
 
 ## Continue or Exit
 If more goals remain in GOALS.md, go back to Orient and work the next one.
@@ -285,52 +304,6 @@ func ClearDeliver(dir string) error {
 		return nil
 	}
 	return err
-}
-
-// AppendInbox appends a message to INBOX.md so the agent can read it next session.
-func AppendInbox(dir string, priority bool, username, message string) error {
-	f, err := os.OpenFile(filepath.Join(dir, "INBOX.md"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	ts := time.Now().Format("2006-01-02 15:04")
-	kind := "note"
-	if priority {
-		kind = "priority"
-	}
-	_, err = fmt.Fprintf(f, "\n## [%s] %s from %s\n%s\n", ts, kind, username, message)
-	return err
-}
-
-// ReadInbox reads INBOX.md. Returns "" if not found.
-func ReadInbox(dir string) (string, error) {
-	data, err := os.ReadFile(filepath.Join(dir, "INBOX.md"))
-	if err != nil {
-		if os.IsNotExist(err) {
-			return "", nil
-		}
-		return "", err
-	}
-	return string(data), nil
-}
-
-// ClearInbox removes INBOX.md after the agent has handled its contents.
-func ClearInbox(dir string) error {
-	err := os.Remove(filepath.Join(dir, "INBOX.md"))
-	if os.IsNotExist(err) {
-		return nil
-	}
-	return err
-}
-
-// HasInbox returns true if INBOX.md exists and is non-empty.
-func HasInbox(dir string) bool {
-	info, err := os.Stat(filepath.Join(dir, "INBOX.md"))
-	if err != nil {
-		return false
-	}
-	return info.Size() > 0
 }
 
 func LogSize(dir string) (int64, error) {

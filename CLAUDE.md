@@ -28,7 +28,7 @@ go test ./... -v
 
 Single Go binary. Filesystem is the protocol — no MCP, no custom IPC.
 
-- `internal/workspace/` — file I/O helpers for agent directories (GOALS.md, MEMORY.md, log.md, PROGRAM.md, DELIVER.md, INBOX.md)
+- `internal/workspace/` — file I/O helpers for agent directories (GOALS.md, MEMORY.md, log.md, PROGRAM.md, DELIVER.md, mailbox/)
 - `internal/agent/` — Agent struct wrapping a workspace directory
 - `internal/loop/` — AgentLoop (runs `claude --agent`, stuck watchdog, graceful SIGTERM) + Manager (goroutine-per-agent, pause/resume)
 - `internal/eval/` — EVAL.md parser and metric comparison for evaluation loops
@@ -53,7 +53,7 @@ Each agent is a directory under `~/.ark/agents-home/<name>/` with:
 - `MEMORY.md` — agent-maintained working context
 - `log.md` — append-only accomplishment log
 - `DELIVER.md` — deliverable content relayed to Discord channel, cleared after delivery
-- `INBOX.md` — mid-session messages from users (keel writes via `!note`/`!priority`, agent reads and clears)
+- `mailbox/` — CSP-async messaging (inbox/{important,priority,all}, starred, drafts, sent, read)
 - `.claude/agents/<name>.md` — Claude Code agent definition
 - `schedule/` — self-scheduled future goals (see below)
 - `projects/` — persistent versioned work, each subdirectory is a git repo (managed via cubit)
@@ -82,8 +82,9 @@ Discord: `!schedule` to list upcoming, `!wrap-up` to gracefully stop, `!update` 
 While the agent loop is running, you can interact without interrupting:
 
 - `!ask <msg>` — one-shot question answered by a separate subprocess (doesn't affect the loop)
-- `!note <msg>` — leave a note in INBOX.md (agent reads at next session start)
-- `!priority <msg>` — leave a priority note (agent handles before goals, also nudges the loop)
+- `!note <msg>` — leave a note in the agent's mailbox (agent reads at next session start)
+- `!priority <msg>` — leave a priority note in the agent's mailbox (watcher auto-wakes the loop)
+- `!dream` — manually trigger memory consolidation (cubit dream)
 - `!pause` — pause the loop after the current session completes
 - `!resume` — resume a paused loop
 
@@ -101,7 +102,7 @@ max_no_improve: 10
 ---
 ```
 
-The agent writes metric JSON files to `projects/<name>/metrics/`. After each session, keel scans for new metrics, tracks improvement, enforces budget limits, and detects convergence. On regression, keel injects context into INBOX.md so the agent can decide how to respond (revert, adjust, or try a different approach).
+The agent writes metric JSON files to `projects/<name>/metrics/`. After each session, keel scans for new metrics, tracks improvement, enforces budget limits, and detects convergence. On regression, keel injects context into the agent's mailbox so it can decide how to respond (revert, adjust, or try a different approach).
 
 One-shot dirs are deleted after firing. Cron dirs persist with `.last-fired` guard.
 A 60-second ticker goroutine in `keel serve` scans all agent schedule dirs and fires due entries.

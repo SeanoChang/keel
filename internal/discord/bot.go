@@ -19,14 +19,16 @@ import (
 )
 
 type Bot struct {
-	session      *discordgo.Session
-	cfg          *config.Config
-	loopMgr      *loop.Manager
-	tailers      map[string]*LogTailer
-	sleepBetween time.Duration
-	archiveEvery int
-	schedStop    chan struct{} // signals scheduler goroutine to stop
-	schedDone    chan struct{} // closed when scheduler goroutine exits
+	session         *discordgo.Session
+	cfg             *config.Config
+	loopMgr         *loop.Manager
+	tailers         map[string]*LogTailer
+	mailboxWatchers map[string]*MailboxWatcher
+	sleepBetween    time.Duration
+	archiveEvery    int
+	schedStop       chan struct{} // signals scheduler goroutine to stop
+	schedDone       chan struct{} // closed when scheduler goroutine exits
+	lastDreamDate   string        // "2006-01-02" — prevents double-fire
 }
 
 func NewBot(cfg *config.Config, sleepBetween time.Duration, archiveEvery int) (*Bot, error) {
@@ -41,14 +43,15 @@ func NewBot(cfg *config.Config, sleepBetween time.Duration, archiveEvery int) (*
 	}
 
 	b := &Bot{
-		session:      session,
-		cfg:          cfg,
-		loopMgr:      loop.NewManager(),
-		tailers:      make(map[string]*LogTailer),
-		sleepBetween: sleepBetween,
-		archiveEvery: archiveEvery,
-		schedStop:    make(chan struct{}),
-		schedDone:    make(chan struct{}),
+		session:         session,
+		cfg:             cfg,
+		loopMgr:         loop.NewManager(),
+		tailers:         make(map[string]*LogTailer),
+		mailboxWatchers: make(map[string]*MailboxWatcher),
+		sleepBetween:    sleepBetween,
+		archiveEvery:    archiveEvery,
+		schedStop:       make(chan struct{}),
+		schedDone:       make(chan struct{}),
 	}
 
 	session.AddHandler(b.onMessageCreate)
@@ -64,9 +67,25 @@ func (b *Bot) Start() error {
 	log.Printf("[keel] Discord bot connected")
 
 	for name, ch := range b.cfg.Channels {
+		// Startup check: warn if agent has INBOX.md but no mailbox/
+		b.checkMailboxMigration(name, ch.AgentDir)
+
+		// Ensure mailbox directory tree exists
+		if err := workspace.EnsureMailbox(ch.AgentDir); err != nil {
+			log.Printf("[keel] %s: error creating mailbox: %v", name, err)
+		}
+
 		tailer := NewLogTailer(name, ch.AgentDir, ch.ChannelID, b.cfg.Bot.StatusChannelID, b.session)
 		b.tailers[name] = tailer
 		go tailer.Start()
+
+		// Capture loop vars for closure
+		agentName, agentCh := name, ch
+		mw := NewMailboxWatcher(name, ch.AgentDir, func() {
+			b.ensureRunning(agentName, agentCh)
+		})
+		b.mailboxWatchers[name] = mw
+		go mw.Start()
 	}
 
 	go b.runScheduler()
@@ -81,8 +100,36 @@ func (b *Bot) Stop() {
 	for _, t := range b.tailers {
 		t.Stop()
 	}
+	for _, mw := range b.mailboxWatchers {
+		mw.Stop()
+	}
 	b.session.Close()
 	log.Printf("[keel] Discord bot disconnected")
+}
+
+// ensureRunning nudges a running loop or starts a new one if idle.
+func (b *Bot) ensureRunning(name string, ch config.ChannelConfig) {
+	if b.loopMgr.IsRunning(name) {
+		b.loopMgr.Nudge(name)
+	} else {
+		onOutput, onLifecycle, opts := b.sessionHandlers(name, ch.ChannelID, ch.AgentDir)
+		if err := b.loopMgr.Start(name, ch.AgentDir, loop.DefaultCommandBuilder, b.sleepBetween, b.archiveEvery, onOutput, onLifecycle, opts); err != nil {
+			log.Printf("[keel] %s: error starting loop: %v", name, err)
+		}
+	}
+}
+
+// checkMailboxMigration warns if an agent has INBOX.md but no mailbox directory.
+func (b *Bot) checkMailboxMigration(name, dir string) {
+	inboxPath := filepath.Join(dir, "INBOX.md")
+	mailboxPath := filepath.Join(dir, "mailbox")
+
+	_, inboxErr := os.Stat(inboxPath)
+	_, mailboxErr := os.Stat(mailboxPath)
+
+	if inboxErr == nil && os.IsNotExist(mailboxErr) {
+		log.Printf("[keel] WARNING: agent %s has INBOX.md but no mailbox/ — run 'cubit migrate' to upgrade", name)
+	}
 }
 
 func (b *Bot) onMessageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
@@ -115,15 +162,7 @@ func (b *Bot) onMessageCreate(s *discordgo.Session, m *discordgo.MessageCreate) 
 		return
 	}
 
-	if b.loopMgr.IsRunning(agentName) {
-		b.loopMgr.Nudge(agentName)
-	} else {
-		onOutput, onLifecycle, opts := b.sessionHandlers(agentName, ch.ChannelID, ch.AgentDir)
-		err := b.loopMgr.Start(agentName, ch.AgentDir, loop.DefaultCommandBuilder, b.sleepBetween, b.archiveEvery, onOutput, onLifecycle, opts)
-		if err != nil {
-			log.Printf("[keel] error starting loop for %s: %v", agentName, err)
-		}
-	}
+	b.ensureRunning(agentName, ch)
 }
 
 // sessionHandlers returns (onOutput, onLifecycle, opts) for a loop session.
@@ -359,7 +398,7 @@ func (b *Bot) sessionHandlers(agentName, channelID, agentDir string) (onOutput f
 			msg = fmt.Sprintf("**%s** [%s] Iter %d: %s = %.4f (best %.4f) — $%.2f",
 				agentName, update.Project, update.Iteration, update.MetricName, update.Value, update.Best, update.CostSoFar)
 		case "regressed":
-			msg = fmt.Sprintf("**%s** [%s] Iter %d: %s regressed to %.4f (best %.4f). Context injected via INBOX.md.",
+			msg = fmt.Sprintf("**%s** [%s] Iter %d: %s regressed to %.4f (best %.4f). Context injected via mailbox.",
 				agentName, update.Project, update.Iteration, update.MetricName, update.Value, update.Best)
 		case "budget_exceeded":
 			msg = fmt.Sprintf("**%s** [%s] Budget limit reached ($%.2f). Loop stopped. Best: %.4f",
@@ -503,6 +542,41 @@ func (b *Bot) runAgentArchive(agentName, agentDir string) {
 	}
 }
 
+// runAgentDream runs cubit dream to consolidate agent memory.
+func (b *Bot) runAgentDream(agentName, agentDir string) {
+	log.Printf("[keel] %s: running cubit dream", agentName)
+	cmd := exec.Command("cubit", "dream", "--include-log")
+	cmd.Dir = agentDir
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		log.Printf("[keel] %s: dream error: %v\n%s", agentName, err, output)
+	} else {
+		log.Printf("[keel] %s: dream complete", agentName)
+	}
+}
+
+// checkDream runs cubit dream for all idle agents at 4:00 AM daily.
+func (b *Bot) checkDream() {
+	now := time.Now()
+	if now.Hour() != 4 || now.Minute() != 0 {
+		return
+	}
+	today := now.Format("2006-01-02")
+	if b.lastDreamDate == today {
+		return
+	}
+	b.lastDreamDate = today
+	for name, ch := range b.cfg.Channels {
+		if b.loopMgr.IsRunning(name) {
+			log.Printf("[keel] %s: skipping dream (loop running)", name)
+			continue
+		}
+		b.sendStatus(name, "Running scheduled dream...")
+		b.runAgentDream(name, ch.AgentDir)
+		b.sendStatus(name, "Dream complete")
+	}
+}
+
 // runScheduler sleeps until the top of each minute, then scans all agent
 // schedule dirs and fires due entries. Re-aligns on every iteration so
 // it never drifts from the wall clock regardless of checkSchedules duration.
@@ -517,6 +591,7 @@ func (b *Bot) runScheduler() {
 		case <-time.After(delay):
 		}
 		b.checkSchedules()
+		b.checkDream()
 	}
 }
 

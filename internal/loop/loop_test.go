@@ -805,9 +805,13 @@ func TestLoopErrorBackoffEmitsLifecycle(t *testing.T) {
 		t.Errorf("expected backoff lifecycle event, got: %v", events)
 	}
 
-	// Verify error context was written to INBOX.md
-	inbox, _ := os.ReadFile(filepath.Join(dir, "INBOX.md"))
-	if !strings.Contains(string(inbox), "[error] Session failed") {
-		t.Errorf("expected error context in INBOX.md, got: %q", string(inbox))
+	// Verify error context was written to mailbox
+	entries, _ := os.ReadDir(filepath.Join(dir, "mailbox", "inbox", "important"))
+	if len(entries) == 0 {
+		t.Fatal("expected error message in mailbox/inbox/important/")
+	}
+	msgData, _ := os.ReadFile(filepath.Join(dir, "mailbox", "inbox", "important", entries[0].Name()))
+	if !strings.Contains(string(msgData), "[error] Session failed") {
+		t.Errorf("expected error context in mailbox message, got: %q", string(msgData))
 	}
 }

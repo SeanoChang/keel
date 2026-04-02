@@ -50,23 +50,22 @@ func (b *Bot) handleCommand(s *discordgo.Session, m *discordgo.MessageCreate, ag
 		if args == "" {
 			response = "Usage: `!note <message>`"
 		} else {
-			if err := workspace.AppendInbox(ch.AgentDir, false, m.Author.Username, args); err != nil {
+			subject := noteSubject(args)
+			if err := workspace.WriteMailboxMessage(ch.AgentDir, m.Author.Username, subject, "all", "notification", args); err != nil {
 				response = fmt.Sprintf("Error: %v", err)
 			} else {
-				response = "Note added to INBOX.md."
+				response = "Note added to mailbox."
 			}
 		}
 	case "priority":
 		if args == "" {
 			response = "Usage: `!priority <message>`"
 		} else {
-			if err := workspace.AppendInbox(ch.AgentDir, true, m.Author.Username, args); err != nil {
+			subject := noteSubject(args)
+			if err := workspace.WriteMailboxMessage(ch.AgentDir, m.Author.Username, subject, "priority", "notification", args); err != nil {
 				response = fmt.Sprintf("Error: %v", err)
 			} else {
-				response = "Priority note added to INBOX.md."
-				if b.loopMgr.IsRunning(agentName) {
-					b.loopMgr.Nudge(agentName)
-				}
+				response = "Priority note added to mailbox."
 			}
 		}
 	case "stop":
@@ -97,6 +96,9 @@ func (b *Bot) handleCommand(s *discordgo.Session, m *discordgo.MessageCreate, ag
 		response = b.cmdWrapUp(agentName, ch, args)
 	case "schedule":
 		response = b.cmdSchedule(ch, args)
+	case "dream":
+		go b.cmdDream(s, m, agentName, ch)
+		return
 	case "update", "keel-update":
 		go b.cmdKeelUpdate(s, m)
 		return
@@ -174,8 +176,8 @@ func (b *Bot) cmdStart(name string, ch config.ChannelConfig) string {
 	if b.loopMgr.IsRunning(name) {
 		return fmt.Sprintf("Agent **%s** is already running.", name)
 	}
-	if !workspace.HasGoals(ch.AgentDir) {
-		return fmt.Sprintf("Agent **%s** has no goals. Send a message first.", name)
+	if !workspace.HasGoals(ch.AgentDir) && !workspace.HasMailboxMessages(ch.AgentDir) {
+		return fmt.Sprintf("Agent **%s** has no goals or messages. Send a message first.", name)
 	}
 	onOutput, onLifecycle, opts := b.sessionHandlers(name, ch.ChannelID, ch.AgentDir)
 	err := b.loopMgr.Start(name, ch.AgentDir, loop.DefaultCommandBuilder, b.sleepBetween, b.archiveEvery, onOutput, onLifecycle, opts)
@@ -188,8 +190,8 @@ func (b *Bot) cmdStart(name string, ch config.ChannelConfig) string {
 func cmdHelp() string {
 	return "**Keel Commands**\n" +
 		"`!ask <msg>` — quick one-shot question (works while loop is running)\n" +
-		"`!note <msg>` — leave a note for the agent (read next session)\n" +
-		"`!priority <msg>` — leave a priority note (handled before goals)\n" +
+		"`!note <msg>` — leave a note in the agent's mailbox\n" +
+		"`!priority <msg>` — leave a priority note in the agent's mailbox\n" +
 		"`!help` — show this message\n" +
 		"`!status` — agent status (running, goals, memory)\n" +
 		"`!goals` — show current GOALS.md\n" +
@@ -201,6 +203,7 @@ func cmdHelp() string {
 		"`!resume` — resume a paused loop\n" +
 		"`!wrap-up [msg]` — tell the agent to finish up and stop gracefully\n" +
 		"`!schedule` — show scheduled goals\n" +
+		"`!dream` — consolidate agent memory (runs cubit dream)\n" +
 		"`!clear` — clear all goals\n" +
 		"`!update` — update keel to latest release and restart\n" +
 		"`!<name>-update` — update a managed binary (e.g. `!nark-update`, `!cubit-update`)\n\n" +
@@ -283,6 +286,14 @@ func (b *Bot) cmdAsk(s *discordgo.Session, m *discordgo.MessageCreate, agentName
 		sendChunked(s, m.ChannelID, response[1900:])
 	}
 	b.sendStatus(agentName, "!ask complete")
+}
+
+func (b *Bot) cmdDream(s *discordgo.Session, m *discordgo.MessageCreate, agentName string, ch config.ChannelConfig) {
+	b.reply(s, m, fmt.Sprintf("Running dream for **%s**...", agentName))
+	b.sendStatus(agentName, "!dream started")
+	b.runAgentDream(agentName, ch.AgentDir)
+	b.reply(s, m, fmt.Sprintf("Dream complete for **%s**.", agentName))
+	b.sendStatus(agentName, "!dream complete")
 }
 
 func (b *Bot) cmdClear(ch config.ChannelConfig, name string) string {
@@ -373,6 +384,18 @@ func (b *Bot) cmdBinaryUpdate(s *discordgo.Session, m *discordgo.MessageCreate, 
 	} else {
 		b.reply(s, m, fmt.Sprintf("`%s` done.", cmdStr))
 	}
+}
+
+// noteSubject extracts a short subject from a message (first line, truncated to 60 chars).
+func noteSubject(msg string) string {
+	line := msg
+	if idx := strings.IndexByte(msg, '\n'); idx >= 0 {
+		line = msg[:idx]
+	}
+	if len(line) > 60 {
+		line = line[:60]
+	}
+	return strings.TrimSpace(line)
 }
 
 func (b *Bot) cmdKeelUpdate(s *discordgo.Session, m *discordgo.MessageCreate) {
