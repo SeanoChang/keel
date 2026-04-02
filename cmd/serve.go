@@ -46,7 +46,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 		cfg.Channels[name] = ch
 	}
 
-	bot, err := discord.NewBot(cfg, serveSleep, serveArchiveEvery)
+	bot, err := discord.NewBot(cfg, serveConfigPath, serveSleep, serveArchiveEvery)
 	if err != nil {
 		return err
 	}

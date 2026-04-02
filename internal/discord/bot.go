@@ -1,6 +1,7 @@
 package discord
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -26,12 +27,18 @@ type Bot struct {
 	mailboxWatchers map[string]*MailboxWatcher
 	sleepBetween    time.Duration
 	archiveEvery    int
-	schedStop       chan struct{} // signals scheduler goroutine to stop
-	schedDone       chan struct{} // closed when scheduler goroutine exits
-	lastDreamDate   string        // "2006-01-02" — prevents double-fire
+	modelsMu        sync.RWMutex
+	models          map[string]string // per-agent model override (empty = default)
+	schedStop       chan struct{}      // signals scheduler goroutine to stop
+	schedDone       chan struct{}      // closed when scheduler goroutine exits
+	lastDreamDate   string            // "2006-01-02" — prevents double-fire
+	initSession     *InitSession      // active init flow (nil when idle)
+	initMu          sync.Mutex        // guards initSession
+	initWatcher     *InitWatcher      // watches agents-home for .init-pending
+	configPath      string            // path to discord.toml for config writes
 }
 
-func NewBot(cfg *config.Config, sleepBetween time.Duration, archiveEvery int) (*Bot, error) {
+func NewBot(cfg *config.Config, configPath string, sleepBetween time.Duration, archiveEvery int) (*Bot, error) {
 	token := os.Getenv(cfg.Bot.TokenEnv)
 	if token == "" {
 		return nil, fmt.Errorf("env var %s is empty or unset", cfg.Bot.TokenEnv)
@@ -45,9 +52,11 @@ func NewBot(cfg *config.Config, sleepBetween time.Duration, archiveEvery int) (*
 	b := &Bot{
 		session:         session,
 		cfg:             cfg,
+		configPath:      configPath,
 		loopMgr:         loop.NewManager(),
 		tailers:         make(map[string]*LogTailer),
 		mailboxWatchers: make(map[string]*MailboxWatcher),
+		models:          make(map[string]string),
 		sleepBetween:    sleepBetween,
 		archiveEvery:    archiveEvery,
 		schedStop:       make(chan struct{}),
@@ -90,6 +99,28 @@ func (b *Bot) Start() error {
 
 	go b.runScheduler()
 
+	// Start init watcher for cubit init --keel
+	agentsHome := b.resolveAgentsHome()
+	if agentsHome != "" {
+		b.initWatcher = NewInitWatcher(agentsHome, func(agentDir string, pending *InitPending) {
+			setupChannelID := b.cfg.ResolveSetupChannel()
+			if setupChannelID == "" {
+				log.Printf("[keel] init watcher: no setup channel configured, ignoring .init-pending")
+				return
+			}
+			b.initMu.Lock()
+			if b.initSession != nil && !b.initSession.IsDone() {
+				b.initMu.Unlock()
+				log.Printf("[keel] init watcher: init already active for %s, ignoring .init-pending for %s", b.initSession.AgentName(), pending.Agent)
+				return
+			}
+			b.initSession = NewInitSession(b.session, setupChannelID, pending.Agent, agentDir, "", b.configPath, b.cfg.Bot.GuildID, pending.ImportIdentity)
+			b.initMu.Unlock()
+			go b.initSession.Start()
+		})
+		go b.initWatcher.Start()
+	}
+
 	return nil
 }
 
@@ -103,8 +134,71 @@ func (b *Bot) Stop() {
 	for _, mw := range b.mailboxWatchers {
 		mw.Stop()
 	}
+	if b.initWatcher != nil {
+		b.initWatcher.Stop()
+	}
 	b.session.Close()
 	log.Printf("[keel] Discord bot disconnected")
+}
+
+func (b *Bot) resolveAgentsHome() string {
+	for _, ch := range b.cfg.Channels {
+		return filepath.Dir(ch.AgentDir) // agents-home is parent of any agent dir
+	}
+	return ""
+}
+
+// latestModels maps family short names to the latest model ID for each.
+// Update these when new model versions are released.
+var latestModels = map[string]string{
+	"opus":   "claude-opus-4-6",
+	"sonnet": "claude-sonnet-4-6",
+	"haiku":  "claude-haiku-4-5-20251001",
+}
+
+// ResolveModel returns the full model ID for a short name or version-specific name.
+// Accepts: "opus", "sonnet", "haiku", "opus-4-6", "sonnet-4-6", "haiku-4-5", or full IDs.
+func ResolveModel(name string) string {
+	name = strings.ToLower(strings.TrimSpace(name))
+	// Direct match on short name
+	if id, ok := latestModels[name]; ok {
+		return id
+	}
+	// Check if it's a version-specific name like "opus-4-6" → "claude-opus-4-6"
+	candidate := "claude-" + name
+	for _, id := range latestModels {
+		if id == candidate || strings.HasPrefix(id, candidate) {
+			return id
+		}
+	}
+	// Check if it's already a full model ID
+	for _, id := range latestModels {
+		if id == name {
+			return id
+		}
+	}
+	return ""
+}
+
+// commandBuilder returns a CommandBuilder that injects the agent's model override.
+// Priority: runtime override (!set-model) > config default > no --model flag.
+func (b *Bot) commandBuilder(agentName string) loop.CommandBuilder {
+	return func(ctx context.Context, name, dir, program string) *loop.CommandSpec {
+		spec := loop.DefaultCommandBuilder(ctx, name, dir, program)
+		// Check runtime override first, then config default
+		b.modelsMu.RLock()
+		model := b.models[agentName]
+		b.modelsMu.RUnlock()
+		if model == "" {
+			if ch, ok := b.cfg.Channels[agentName]; ok {
+				model = ch.Model
+			}
+		}
+		if modelID := ResolveModel(model); modelID != "" {
+			spec.Args = append(spec.Args, "--model", modelID)
+		}
+		return spec
+	}
 }
 
 // ensureRunning nudges a running loop or starts a new one if idle.
@@ -113,7 +207,7 @@ func (b *Bot) ensureRunning(name string, ch config.ChannelConfig) {
 		b.loopMgr.Nudge(name)
 	} else {
 		onOutput, onLifecycle, opts := b.sessionHandlers(name, ch.ChannelID, ch.AgentDir)
-		if err := b.loopMgr.Start(name, ch.AgentDir, loop.DefaultCommandBuilder, b.sleepBetween, b.archiveEvery, onOutput, onLifecycle, opts); err != nil {
+		if err := b.loopMgr.Start(name, ch.AgentDir, b.commandBuilder(name), b.sleepBetween, b.archiveEvery, onOutput, onLifecycle, opts); err != nil {
 			log.Printf("[keel] %s: error starting loop: %v", name, err)
 		}
 	}
@@ -141,13 +235,43 @@ func (b *Bot) onMessageCreate(s *discordgo.Session, m *discordgo.MessageCreate) 
 		return
 	}
 
-	agentName, ch, ok := b.cfg.ResolveChannel(m.ChannelID)
-	if !ok {
+	content := strings.TrimSpace(m.Content)
+	if content == "" {
 		return
 	}
 
-	content := strings.TrimSpace(m.Content)
-	if content == "" {
+	// Setup channel: handle active init session or !init command
+	setupChannelID := b.cfg.ResolveSetupChannel()
+	if m.ChannelID == setupChannelID {
+		// Active init session consumes messages
+		b.initMu.Lock()
+		if b.initSession != nil && !b.initSession.IsDone() {
+			session := b.initSession
+			b.initMu.Unlock()
+			if session.HandleMessage(m.Author.ID, content) {
+				b.initMu.Lock()
+				if b.initSession != nil && b.initSession.IsDone() {
+					b.initSession = nil
+				}
+				b.initMu.Unlock()
+				return
+			}
+		} else {
+			b.initMu.Unlock()
+		}
+
+		// Parse !init command in setup channel
+		if isCmd, cmd, args := ParseCommand(content); isCmd && cmd == "init" {
+			b.handleInitCommand(s, m, args)
+			return
+		}
+
+		// Other ! commands or messages in setup channel — fall through to normal routing
+		// (setup channel might also be an agent channel for migration)
+	}
+
+	agentName, ch, ok := b.cfg.ResolveChannel(m.ChannelID)
+	if !ok {
 		return
 	}
 
@@ -623,7 +747,7 @@ func (b *Bot) checkSchedules() {
 				go func() {
 					b.loopMgr.Stop(agentName)
 					onOutput, onLifecycle, opts := b.sessionHandlers(agentName, channelID, agentDir)
-					if err := b.loopMgr.Start(agentName, agentDir, loop.DefaultCommandBuilder, b.sleepBetween, b.archiveEvery, onOutput, onLifecycle, opts); err != nil {
+					if err := b.loopMgr.Start(agentName, agentDir, b.commandBuilder(agentName), b.sleepBetween, b.archiveEvery, onOutput, onLifecycle, opts); err != nil {
 						log.Printf("[keel] scheduler: error restarting %s: %v", agentName, err)
 					}
 				}()
@@ -632,7 +756,7 @@ func (b *Bot) checkSchedules() {
 			}
 		} else {
 			onOutput, onLifecycle, opts := b.sessionHandlers(name, ch.ChannelID, ch.AgentDir)
-			if err := b.loopMgr.Start(name, ch.AgentDir, loop.DefaultCommandBuilder, b.sleepBetween, b.archiveEvery, onOutput, onLifecycle, opts); err != nil {
+			if err := b.loopMgr.Start(name, ch.AgentDir, b.commandBuilder(name), b.sleepBetween, b.archiveEvery, onOutput, onLifecycle, opts); err != nil {
 				log.Printf("[keel] scheduler: error starting %s: %v", name, err)
 			}
 		}

@@ -72,3 +72,46 @@ func TestResolveChannelByID(t *testing.T) {
 		t.Fatal("expected no match for unknown channel ID")
 	}
 }
+
+func TestLoadConfigWithSetupChannel(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "discord.toml")
+	content := `
+[bot]
+token_env = "DISCORD_BOT_TOKEN"
+guild_id = "123456789"
+setup_channel_id = "999888777"
+
+[channels.noah]
+channel_id = "111111111"
+agent_dir = "/tmp/test-ark/noah"
+`
+	os.WriteFile(path, []byte(content), 0644)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if cfg.Bot.SetupChannelID != "999888777" {
+		t.Errorf("SetupChannelID = %q, want 999888777", cfg.Bot.SetupChannelID)
+	}
+}
+
+func TestSetupChannelFallback(t *testing.T) {
+	cfg := &Config{
+		Bot: BotConfig{SetupChannelID: ""},
+		Channels: map[string]ChannelConfig{
+			"noah": {ChannelID: "111", AgentDir: "/tmp/noah"},
+		},
+	}
+	got := cfg.ResolveSetupChannel()
+	if got != "111" {
+		t.Errorf("ResolveSetupChannel() = %q, want 111 (first channel fallback)", got)
+	}
+
+	cfg.Bot.SetupChannelID = "999"
+	got = cfg.ResolveSetupChannel()
+	if got != "999" {
+		t.Errorf("ResolveSetupChannel() = %q, want 999", got)
+	}
+}

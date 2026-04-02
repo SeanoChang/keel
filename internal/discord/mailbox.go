@@ -60,7 +60,9 @@ func (w *MailboxWatcher) Start() {
 				log.Printf("[keel] %s: new mailbox message: %s", w.agentName, name)
 				// Parse from/subject from canonical filename: <ts>-<from>-<slug>.md
 				if from, slug, ok := parseMessageFilename(name); ok {
-					workspace.LogMailboxEvent(w.dir, from, "message", slug)
+					if err := workspace.LogMailboxEvent(w.dir, from, "message", slug); err != nil {
+						log.Printf("[keel] %s: mailbox log error: %v", w.agentName, err)
+					}
 				}
 				w.onMessage()
 			}

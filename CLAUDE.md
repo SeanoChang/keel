@@ -24,6 +24,17 @@ go test ./... -v
 - `keel schedule rm <agent> <name>` — remove a scheduled goal
 - `keel schedule clear <agent>` — remove all scheduled goals
 
+### Agent Init via Discord
+
+Two entry points:
+- CLI: `cubit init --keel <name>` scaffolds agent dir, writes `.init-pending`, keel picks it up
+- Discord: `!init <name>` in setup channel (or `!init <name> --force` to re-init)
+
+The setup channel is configured via `setup_channel_id` in `discord.toml` `[bot]` section.
+Only this channel accepts `!init`. Falls back to first agent channel if not set.
+
+`!quit` cancels an active init and cleans up the agent directory.
+
 ## Architecture
 
 Single Go binary. Filesystem is the protocol — no MCP, no custom IPC.
@@ -59,6 +70,7 @@ Each agent is a directory under `~/.ark/agents-home/<name>/` with:
 - `projects/` — persistent versioned work, each subdirectory is a git repo (managed via cubit)
 - `.exit` — sentinel file: agent creates when all goals AND follow-up directions are exhausted (loop stops)
 - `.wrap-up` — sentinel file: `!wrap-up` creates to request graceful stop with archive
+- `.init-pending` — sentinel file written by `cubit init --keel`, triggers Discord-based interview
 
 Goals tagged `[quick]` are completed directly without follow-up branching. All other goals default to deep work with self-directed branching via the Reflect step.
 

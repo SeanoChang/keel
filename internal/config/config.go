@@ -10,6 +10,7 @@ import (
 type BotConfig struct {
 	TokenEnv        string   `toml:"token_env"`
 	GuildID         string   `toml:"guild_id"`
+	SetupChannelID  string   `toml:"setup_channel_id"`
 	StatusChannelID string   `toml:"status_channel_id"`
 	ErrorChannelID  string   `toml:"error_channel_id"`  // optional: channel for error/retry events
 	AdminUsers      []string `toml:"admin_users"`        // Discord user IDs allowed to interact
@@ -19,6 +20,7 @@ type BotConfig struct {
 type ChannelConfig struct {
 	ChannelID string `toml:"channel_id"`
 	AgentDir  string `toml:"agent_dir"`
+	Model     string `toml:"model"` // claude model override (e.g. "opus", "sonnet", "haiku")
 }
 
 type ManagedBinary struct {
@@ -53,6 +55,18 @@ func (c *Config) IsAdmin(userID string) bool {
 		}
 	}
 	return false
+}
+
+// ResolveSetupChannel returns the setup channel ID.
+// Falls back to the first configured agent channel if setup_channel_id is empty.
+func (c *Config) ResolveSetupChannel() string {
+	if c.Bot.SetupChannelID != "" {
+		return c.Bot.SetupChannelID
+	}
+	for _, ch := range c.Channels {
+		return ch.ChannelID
+	}
+	return ""
 }
 
 func Load(path string) (*Config, error) {

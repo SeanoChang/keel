@@ -47,6 +47,10 @@ func init() {
 	doctorCmd.Flags().StringVar(&doctorConfigPath, "config", "config/discord.toml", "Path to config file")
 	doctorCmd.Flags().StringVar(&doctorAgent, "agent", "", "Check a single agent only")
 	rootCmd.AddCommand(doctorCmd)
+
+	// migrate-config
+	migrateConfigCmd.Flags().StringVar(&migrateConfigPath, "config", "config/discord.toml", "Path to config file")
+	rootCmd.AddCommand(migrateConfigCmd)
 }
 
 func Execute() {

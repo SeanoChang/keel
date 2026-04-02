@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"os/user"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -99,6 +100,8 @@ func (b *Bot) handleCommand(s *discordgo.Session, m *discordgo.MessageCreate, ag
 	case "dream":
 		go b.cmdDream(s, m, agentName, ch)
 		return
+	case "set-model":
+		response = b.cmdSetModel(agentName, args)
 	case "update", "keel-update":
 		go b.cmdKeelUpdate(s, m)
 		return
@@ -180,7 +183,7 @@ func (b *Bot) cmdStart(name string, ch config.ChannelConfig) string {
 		return fmt.Sprintf("Agent **%s** has no goals or messages. Send a message first.", name)
 	}
 	onOutput, onLifecycle, opts := b.sessionHandlers(name, ch.ChannelID, ch.AgentDir)
-	err := b.loopMgr.Start(name, ch.AgentDir, loop.DefaultCommandBuilder, b.sleepBetween, b.archiveEvery, onOutput, onLifecycle, opts)
+	err := b.loopMgr.Start(name, ch.AgentDir, b.commandBuilder(name), b.sleepBetween, b.archiveEvery, onOutput, onLifecycle, opts)
 	if err != nil {
 		return fmt.Sprintf("Error starting **%s**: %v", name, err)
 	}
@@ -203,10 +206,15 @@ func cmdHelp() string {
 		"`!resume` — resume a paused loop\n" +
 		"`!wrap-up [msg]` — tell the agent to finish up and stop gracefully\n" +
 		"`!schedule` — show scheduled goals\n" +
+		"`!set-model <model>` — set Claude model (opus, sonnet, haiku)\n" +
 		"`!dream` — consolidate agent memory (runs cubit dream)\n" +
 		"`!clear` — clear all goals\n" +
 		"`!update` — update keel to latest release and restart\n" +
 		"`!<name>-update` — update a managed binary (e.g. `!nark-update`, `!cubit-update`)\n\n" +
+		"**Setup (setup channel only)**\n" +
+		"`!init <name>` — initialize a new agent via Discord interview\n" +
+		"`!init <name> --force` — re-initialize an existing agent\n" +
+		"`!quit` — cancel an active init\n\n" +
 		"Any other message is added as a goal."
 }
 
@@ -294,6 +302,44 @@ func (b *Bot) cmdDream(s *discordgo.Session, m *discordgo.MessageCreate, agentNa
 	b.runAgentDream(agentName, ch.AgentDir)
 	b.reply(s, m, fmt.Sprintf("Dream complete for **%s**.", agentName))
 	b.sendStatus(agentName, "!dream complete")
+}
+
+func (b *Bot) cmdSetModel(agentName, args string) string {
+	if args == "" {
+		b.modelsMu.RLock()
+		current := b.models[agentName]
+		b.modelsMu.RUnlock()
+		if current == "" {
+			if ch, ok := b.cfg.Channels[agentName]; ok {
+				current = ch.Model
+			}
+		}
+		if current == "" {
+			current = "default"
+		}
+		resolved := ResolveModel(current)
+		if resolved == "" {
+			resolved = "(cli default)"
+		}
+		return fmt.Sprintf("Current model for **%s**: `%s` → `%s`\nAvailable: `opus` (`%s`), `sonnet` (`%s`), `haiku` (`%s`)",
+			agentName, current, resolved,
+			ResolveModel("opus"), ResolveModel("sonnet"), ResolveModel("haiku"))
+	}
+	model := strings.ToLower(strings.TrimSpace(args))
+	if model == "default" || model == "reset" {
+		b.modelsMu.Lock()
+		delete(b.models, agentName)
+		b.modelsMu.Unlock()
+		return fmt.Sprintf("Model reset to default for **%s**.", agentName)
+	}
+	if ResolveModel(model) == "" {
+		return fmt.Sprintf("Unknown model `%s`. Available: `opus` (`%s`), `sonnet` (`%s`), `haiku` (`%s`)",
+			args, ResolveModel("opus"), ResolveModel("sonnet"), ResolveModel("haiku"))
+	}
+	b.modelsMu.Lock()
+	b.models[agentName] = model
+	b.modelsMu.Unlock()
+	return fmt.Sprintf("Model set to `%s` for **%s**. Takes effect next session.", model, agentName)
 }
 
 func (b *Bot) cmdClear(ch config.ChannelConfig, name string) string {
@@ -446,4 +492,72 @@ func (b *Bot) cmdKeelUpdate(s *discordgo.Session, m *discordgo.MessageCreate) {
 	if out, err := kick.CombinedOutput(); err != nil {
 		log.Printf("[keel] keel-update: kickstart failed: %s — %v", string(out), err)
 	}
+}
+
+func (b *Bot) handleInitCommand(s *discordgo.Session, m *discordgo.MessageCreate, args string) {
+	// Concurrency guard
+	b.initMu.Lock()
+	if b.initSession != nil && !b.initSession.IsDone() {
+		name := b.initSession.AgentName()
+		b.initMu.Unlock()
+		b.reply(s, m, fmt.Sprintf("An init is already in progress for '%s'. Wait for it to finish or type `!quit` to cancel.", name))
+		return
+	}
+	b.initMu.Unlock()
+
+	// Parse args: "!init <name>" or "!init <name> --force"
+	parts := strings.Fields(args)
+	if len(parts) == 0 {
+		b.reply(s, m, "Usage: `!init <agent_name>` or `!init <agent_name> --force`")
+		return
+	}
+
+	agentName := parts[0]
+	if !isValidAgentName(agentName) {
+		b.reply(s, m, "Invalid agent name. Use only letters, numbers, hyphens, and underscores.")
+		return
+	}
+	force := len(parts) > 1 && parts[1] == "--force"
+
+	// Resolve agents-home root from existing config
+	var agentsHome string
+	for _, ch := range b.cfg.Channels {
+		agentsHome = filepath.Dir(ch.AgentDir) // parent of agent dir = agents-home
+		break
+	}
+	if agentsHome == "" {
+		home, _ := os.UserHomeDir()
+		agentsHome = filepath.Join(home, ".ark", "agents-home")
+	}
+
+	agentDir := filepath.Join(agentsHome, agentName)
+
+	// Check if agent already exists
+	if _, err := os.Stat(agentDir); err == nil {
+		pendingPath := filepath.Join(agentDir, ".init-pending")
+		if _, err := os.Stat(pendingPath); err != nil {
+			// Agent exists but no .init-pending — need --force
+			if !force {
+				b.reply(s, m, fmt.Sprintf("Agent '%s' already exists. Use `!init %s --force` to re-initialize.", agentName, agentName))
+				return
+			}
+		}
+	}
+
+	// Shell out to cubit to scaffold
+	skipArgs := []string{"init", agentName, "--skip-setup"}
+	if force {
+		skipArgs = append(skipArgs, "--force")
+	}
+	cmd := exec.Command("cubit", skipArgs...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		b.reply(s, m, fmt.Sprintf("Scaffold error: %v\n```\n%s\n```", err, string(out)))
+		return
+	}
+
+	// Start init session
+	b.initMu.Lock()
+	b.initSession = NewInitSession(s, m.ChannelID, agentName, agentDir, m.Author.ID, b.configPath, b.cfg.Bot.GuildID, false)
+	b.initMu.Unlock()
+	go b.initSession.Start()
 }
