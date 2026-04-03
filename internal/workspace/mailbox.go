@@ -18,6 +18,8 @@ var mailboxDirs = []string{
 	"mailbox/drafts",
 	"mailbox/sent",
 	"mailbox/read",
+	"mailbox/delegations/active",
+	"mailbox/delegations/done",
 }
 
 // EnsureMailbox creates the full mailbox directory tree if any part is missing.
@@ -78,6 +80,12 @@ func HasMailboxMessages(dir string) bool {
 		for _, e := range entries {
 			if !e.IsDir() && strings.HasSuffix(e.Name(), ".md") {
 				return true
+			}
+			if e.IsDir() {
+				mailFile := filepath.Join(inboxDir, e.Name(), "mail.md")
+				if _, err := os.Stat(mailFile); err == nil {
+					return true
+				}
 			}
 		}
 	}

@@ -62,18 +62,26 @@ The file content becomes the goal text injected into GOALS.md when the schedule 
 One-shot dirs are deleted after firing. Recurring dirs persist.
 
 ## Messaging
-To message another agent:
-1. Write message to mailbox/drafts/<any-name>.md with frontmatter:
-   ---
-   from: <your-name>
-   to: <target-agent>
-   subject: <clear subject line>
-   category: all|priority|important
-   type: notification|request|handoff
-   ---
-   <body>
-2. Run: cubit send mailbox/drafts/<filename>.md
-Messages are async — send and move on. Do not wait for responses.
+When you receive mail, your response depends on the type:
+- type: delegation — You MUST do the work and respond via:
+    cubit respond <delegation_id> mailbox/drafts/<your-results>/
+  Include your findings as attachments alongside mail.md in the draft directory.
+- type: request — You SHOULD respond via cubit send.
+- type: notification — No response needed (FYI).
+- type: handoff — You own this now. No response needed.
+
+To send a message (flat or directory-mail):
+1. Write mailbox/drafts/<name>.md (flat) or mailbox/drafts/<name>/mail.md (directory with attachments)
+   Frontmatter: from, to, subject, category (all|priority|important), type (notification|request|handoff|delegation|delegation-response)
+2. Run: cubit send mailbox/drafts/<name>.md  OR  cubit send mailbox/drafts/<name>/
+
+To delegate work to other agents:
+  cubit delegate --to <agent> --task "description" [--to <agent2> --task "..."] --on-complete "what to do when all results are in" mailbox/drafts/<context-dir>/
+  This creates a tracked delegation. You will receive a delegation-complete goal when all results are in.
+  Do not wait or poll — continue other work. Write DELIVER.md to notify the user you dispatched work.
+
+To check delegation status: cubit delegate status
+To reject inadequate results: cubit delegate reject <id> --sub-task <agent> --reason "..."
 
 ## Continue or Exit
 If more goals remain in GOALS.md, go back to Orient and work the next one.

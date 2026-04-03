@@ -14,6 +14,7 @@ import (
 	"github.com/bwmarrin/discordgo"
 
 	"github.com/SeanoChang/keel/internal/config"
+	"github.com/SeanoChang/keel/internal/delegation"
 	"github.com/SeanoChang/keel/internal/loop"
 	"github.com/SeanoChang/keel/internal/schedule"
 	"github.com/SeanoChang/keel/internal/workspace"
@@ -89,9 +90,14 @@ func (b *Bot) Start() error {
 
 		// Capture loop vars for closure
 		agentName, agentCh := name, ch
-		mw := NewMailboxWatcher(name, ch.AgentDir, func() {
-			b.ensureRunning(agentName, agentCh)
-		})
+		mw := NewMailboxWatcher(name, ch.AgentDir,
+			func() {
+				b.ensureRunning(agentName, agentCh)
+			},
+			func(result *delegation.RouteResult) {
+				b.handleDelegationUpdate(agentName, agentCh.ChannelID, agentCh.AgentDir, result)
+			},
+		)
 		b.mailboxWatchers[name] = mw
 		go mw.Start()
 	}
@@ -654,6 +660,32 @@ func (b *Bot) sendDelivery(s *discordgo.Session, channelID, agentName, agentDir 
 	}
 	header := fmt.Sprintf("**%s — Delivery**\n", agentName)
 	sendChunked(s, channelID, header+content)
+}
+
+// handleDelegationUpdate posts Discord notifications and injects goals on completion.
+func (b *Bot) handleDelegationUpdate(agentName, channelID, agentDir string, result *delegation.RouteResult) {
+	if result == nil {
+		return
+	}
+
+	switch {
+	case result.AllComplete:
+		msg := fmt.Sprintf("All delegated sub-tasks complete. Synthesize results and deliver.\nSee mailbox/delegations/active/%s/ for details.", result.DelegationID)
+		if result.OnComplete != "" {
+			msg += fmt.Sprintf("\nOn-complete instruction: %s", result.OnComplete)
+		}
+		goalMsg := fmt.Sprintf("delegation-complete: %s\n%s", result.DelegationID, msg)
+		if err := workspace.AppendGoal(agentDir, "keel-delegation", goalMsg); err != nil {
+			log.Printf("[keel] %s: error injecting delegation goal: %v", agentName, err)
+		}
+		sendChunked(b.session, channelID,
+			fmt.Sprintf("**%s** — All delegated tasks complete (%d/%d) — resuming synthesis",
+				agentName, result.CompletedCount, result.TotalCount))
+	default:
+		sendChunked(b.session, channelID,
+			fmt.Sprintf("**%s** — Received results from %s (%d/%d complete)",
+				agentName, result.From, result.CompletedCount, result.TotalCount))
+	}
 }
 
 func (b *Bot) reply(s *discordgo.Session, m *discordgo.MessageCreate, msg string) {
