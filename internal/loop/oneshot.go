@@ -16,6 +16,32 @@ const oneShotPrompt = `This is a one-shot question — not a loop session. Answe
 
 Question: %s`
 
+// systemPokePrompt wraps a keel-system notification so the agent recognizes it
+// as machine-generated context, not a user question requiring a reply.
+const systemPokePrompt = `Keel detected an issue with one of your outgoing drafts. Read the message below, fix the draft on disk if needed, and continue. You do NOT need to respond — keel will auto-ship the fixed draft.
+
+%s`
+
+// RunSystemPoke fires a one-shot claude invocation to surface a keel-system
+// message to a sleeping agent. Output is discarded; the agent acts on disk.
+func RunSystemPoke(ctx context.Context, name, dir, message string) error {
+	prompt := fmt.Sprintf(systemPokePrompt, message)
+	cmd := exec.CommandContext(ctx, "claude",
+		"--agent", name,
+		"--permission-mode", "dontAsk",
+		"--verbose",
+		"-p", prompt,
+	)
+	cmd.Dir = dir
+	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return fmt.Errorf("claude exited: %w", err)
+	}
+	return nil
+}
+
 // RunOneShot executes a single claude invocation with the given message and returns the response.
 func RunOneShot(ctx context.Context, name, dir, message string) (string, error) {
 	prompt := fmt.Sprintf(oneShotPrompt, message)

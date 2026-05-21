@@ -48,7 +48,7 @@ func (r *Router) CheckResponse(mailPath string) (string, string, bool) {
 		return "", "", false
 	}
 
-	fm := parseFrontmatter(string(data))
+	fm := ParseFrontmatter(string(data))
 	if fm["type"] != "delegation-response" {
 		return "", "", false
 	}
@@ -165,8 +165,8 @@ type subTaskJSON struct {
 	Attempts       int    `json:"attempts"`
 }
 
-// parseFrontmatter is a minimal YAML frontmatter parser for mail.md files.
-func parseFrontmatter(content string) map[string]string {
+// ParseFrontmatter is a minimal YAML frontmatter parser for mail.md files.
+func ParseFrontmatter(content string) map[string]string {
 	content = strings.TrimSpace(content)
 	if !strings.HasPrefix(content, "---") {
 		return nil
