@@ -40,8 +40,14 @@ describing the problem. Common causes:
 - type: delegation in outbox/ (use cubit delegate)
 - Malformed frontmatter (unterminated --- block)
 
-Fix the draft on disk. Keel retries on every file change and at the end of every session.
-Invalid drafts get .invalid.md appended so they don't loop-fail.
+Validation failures rename the draft in-place to outbox/<name>.invalid.md
+(or outbox/<name>.invalid/ for directory drafts), with the reason as the
+first line of the file. To recover: fix the issue, drop the .invalid suffix
+(rename back to outbox/<name>.md), and save — keel auto-retries on save.
+
+Transport failures (cubit send returned nonzero) leave the draft at
+mailbox/drafts/<name> — run 'cubit send mailbox/drafts/<name>' once cubit
+is reachable again, or move the file back to outbox/ for auto-retry.
 
 ## Delegations (different command)
 

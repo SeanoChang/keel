@@ -37,6 +37,12 @@ func TryShip(agentName, agentDir, relName string) ShipResult {
 
 	info, err := os.Stat(srcPath)
 	if err != nil {
+		if os.IsNotExist(err) {
+			// Already gone — a concurrent watcher or sweep beat us to it.
+			// Return a zero ShipResult so the caller's failure-callback gate
+			// (Reason != "" || Err != nil) does not fire a false alarm.
+			return ShipResult{}
+		}
 		return ShipResult{Err: fmt.Errorf("stat %s: %w", relName, err)}
 	}
 
@@ -44,7 +50,13 @@ func TryShip(agentName, agentDir, relName string) ShipResult {
 	if info.IsDir() {
 		fmFilePath = filepath.Join(srcPath, "mail.md")
 		if _, err := os.Stat(fmFilePath); err != nil {
-			return ShipResult{Err: fmt.Errorf("missing mail.md in %s", relName)}
+			if os.IsNotExist(err) {
+				// Either the watcher's debounce caught the dir between mkdir and
+				// mail.md write, or the dir was moved out from under us. In
+				// both cases the next watcher fire or sweep retry will handle it.
+				return ShipResult{}
+			}
+			return ShipResult{Err: fmt.Errorf("stat mail.md in %s: %w", relName, err)}
 		}
 	} else {
 		fmFilePath = srcPath
@@ -107,7 +119,11 @@ func invalidate(srcPath, relName string, isDir bool, fmData []byte, reason strin
 		dstPath = filepath.Join(filepath.Dir(srcPath), relName+".invalid")
 		_ = os.RemoveAll(dstPath)
 		if err := os.Rename(srcPath, dstPath); err != nil {
-			return ShipResult{Reason: reason, Err: fmt.Errorf("rename invalid dir: %w", err)}
+			// Rename failed: do not set Reason (callers branch on Reason to
+			// decide the recovery instructions, and the file is still at its
+			// original outbox/ path, not at .invalid/). Embed the validation
+			// reason in the error so it isn't lost.
+			return ShipResult{Err: fmt.Errorf("rename invalid dir (%s): %w", reason, err)}
 		}
 		// Prepend reason to mail.md so the agent sees it on open.
 		mailPath := filepath.Join(dstPath, "mail.md")
@@ -116,7 +132,7 @@ func invalidate(srcPath, relName string, isDir bool, fmData []byte, reason strin
 	}
 	_ = os.RemoveAll(dstPath)
 	if err := os.Rename(srcPath, dstPath); err != nil {
-		return ShipResult{Reason: reason, Err: fmt.Errorf("rename invalid: %w", err)}
+		return ShipResult{Err: fmt.Errorf("rename invalid (%s): %w", reason, err)}
 	}
 	// fmData was the file's pre-rename contents; rewrite with reason on top.
 	_ = prependReason(dstPath, reason)

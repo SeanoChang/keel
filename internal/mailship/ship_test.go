@@ -173,6 +173,48 @@ func TestTryShip_CubitFailureLeavesFileInDrafts(t *testing.T) {
 	}
 }
 
+func TestTryShip_StaleEntryNoFailureCallback(t *testing.T) {
+	// Simulates the watcher+sweep race: a file the sweep iterates over has
+	// already been shipped (moved) by the watcher. The stale TryShip call
+	// must not fire a failure callback or it raises a false alarm.
+	withFakeCubit(t, true)
+	dir := agentSkeleton(t)
+
+	res := TryShip("alice", dir, "ghost.md")
+	if res.Sent {
+		t.Fatal("nothing should have shipped")
+	}
+	if res.Err != nil {
+		t.Errorf("expected no Err for stale entry (would fire false-alarm failure callback): %v", res.Err)
+	}
+	if res.Reason != "" {
+		t.Errorf("expected no Reason for stale entry: %q", res.Reason)
+	}
+}
+
+func TestTryShip_DirFormMissingMailNoFailureCallback(t *testing.T) {
+	// Parallel to the stale-entry case for directory-form drafts: the dir
+	// exists but mail.md is absent (watcher caught the debounce between
+	// mkdir and mail.md write, or the dir was moved by another path). Must
+	// stay silent rather than firing a "missing mail.md" false alarm.
+	withFakeCubit(t, true)
+	dir := agentSkeleton(t)
+	if err := os.MkdirAll(filepath.Join(dir, "outbox", "half-written"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	res := TryShip("alice", dir, "half-written")
+	if res.Sent {
+		t.Fatal("nothing should have shipped")
+	}
+	if res.Err != nil {
+		t.Errorf("expected no Err for dir without mail.md: %v", res.Err)
+	}
+	if res.Reason != "" {
+		t.Errorf("expected no Reason: %q", res.Reason)
+	}
+}
+
 func TestSweepDir_SkipsInvalidAndDotfiles(t *testing.T) {
 	withFakeCubit(t, true)
 	dir := agentSkeleton(t)
