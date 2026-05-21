@@ -23,6 +23,7 @@ go test ./... -v
 - `keel schedule ls <agent>` — list scheduled goals
 - `keel schedule rm <agent> <name>` — remove a scheduled goal
 - `keel schedule clear <agent>` — remove all scheduled goals
+- `keel regenerate mailbox <agent> [--force]` — refresh `mailbox/MAILBOX.md` from the bundled template
 
 ### Agent Init via Discord
 
@@ -45,6 +46,7 @@ Single Go binary. Filesystem is the protocol — no MCP, no custom IPC.
 - `internal/eval/` — EVAL.md parser and metric comparison for evaluation loops
 - `internal/config/` — TOML config for Discord channel-to-agent mappings and managed binary definitions
 - `internal/schedule/` — schedule scanning, cron matching, goal injection
+- `internal/mailship/` — validates outbox drafts and shells out to `cubit send` (shared by watcher + sweep)
 - `internal/discord/` — Discord bot, ! commands, log.md tailing via fsnotify, scheduler goroutine
 - `cmd/` — Cobra CLI commands (run, serve, status, schedule)
 
@@ -65,6 +67,8 @@ Each agent is a directory under `~/.ark/agents-home/<name>/` with:
 - `log.md` — append-only accomplishment log
 - `DELIVER.md` — deliverable content relayed to Discord channel, cleared after delivery
 - `mailbox/` — CSP-async messaging (inbox/{important,priority,all}, starred, drafts, sent, read)
+- `mailbox/MAILBOX.md` — agent-facing messaging conventions; written once by `EnsureMailbox`, refresh with `keel regenerate mailbox`
+- `outbox/` — drop-zone fallback for outgoing mail; keel watches and auto-ships via `cubit send` (only this path is rescued; `mailbox/drafts/` still requires explicit `cubit send`)
 - `.claude/agents/<name>.md` — Claude Code agent definition
 - `schedule/` — self-scheduled future goals (see below)
 - `projects/` — persistent versioned work, each subdirectory is a git repo (managed via cubit)
