@@ -62,26 +62,7 @@ The file content becomes the goal text injected into GOALS.md when the schedule 
 One-shot dirs are deleted after firing. Recurring dirs persist.
 
 ## Messaging
-When you receive mail, your response depends on the type:
-- type: delegation — You MUST do the work and respond via:
-    cubit respond <delegation_id> mailbox/drafts/<your-results>/
-  Include your findings as attachments alongside mail.md in the draft directory.
-- type: request — You SHOULD respond via cubit send.
-- type: notification — No response needed (FYI).
-- type: handoff — You own this now. No response needed.
-
-To send a message (flat or directory-mail):
-1. Write mailbox/drafts/<name>.md (flat) or mailbox/drafts/<name>/mail.md (directory with attachments)
-   Frontmatter: from, to, subject, category (all|priority|important), type (notification|request|handoff|delegation|delegation-response)
-2. Run: cubit send mailbox/drafts/<name>.md  OR  cubit send mailbox/drafts/<name>/
-
-To delegate work to other agents:
-  cubit delegate --to <agent> --task "description" [--to <agent2> --task "..."] --on-complete "what to do when all results are in" mailbox/drafts/<context-dir>/
-  This creates a tracked delegation. You will receive a delegation-complete goal when all results are in.
-  Do not wait or poll — continue other work. Write DELIVER.md to notify the user you dispatched work.
-
-To check delegation status: cubit delegate status
-To reject inadequate results: cubit delegate reject <id> --sub-task <agent> --reason "..."
+For mailbox conventions (sending, drop-zone, delegations), read mailbox/MAILBOX.md.
 
 ## Continue or Exit
 If more goals remain in GOALS.md, go back to Orient and work the next one.
@@ -179,6 +160,19 @@ func AppendGoal(dir, username, message string) error {
 	defer f.Close()
 	ts := time.Now().Format("2006-01-02 15:04")
 	_, err = fmt.Fprintf(f, "\n## [%s] from %s\n%s\n", ts, username, message)
+	return err
+}
+
+// AppendSystemMessage appends a machine-generated note to GOALS.md under the
+// "from keel-system" marker so the agent can distinguish it from human goals.
+func AppendSystemMessage(dir, subject, body string) error {
+	f, err := os.OpenFile(filepath.Join(dir, "GOALS.md"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	ts := time.Now().Format("2006-01-02 15:04")
+	_, err = fmt.Fprintf(f, "\n## [%s] from keel-system\n%s\n\n%s\n", ts, subject, body)
 	return err
 }
 

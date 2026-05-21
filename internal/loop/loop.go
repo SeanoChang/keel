@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/SeanoChang/keel/internal/eval"
+	"github.com/SeanoChang/keel/internal/mailship"
 	"github.com/SeanoChang/keel/internal/workspace"
 )
 
@@ -66,7 +67,15 @@ type AgentLoop struct {
 	CumulativeCost   float64            // accumulated session costs
 	LastSessionCost  float64            // cost from most recent session
 	OnEvalUpdate     func(EvalUpdate)   // callback for eval metric notifications
+	OnOutboxFailure  func(reason, relName string, err error) // notified on outbox sweep failures
 	evalStates       map[string]*eval.EvalState // lazy-init, keyed by project name
+}
+
+// sweepOutbox scans <l.Dir>/outbox/ for unshipped drafts and routes them through
+// mailship.TryShip. Invoked after each session ends so files the watcher missed
+// (startup race, burst overflow, deferred dir-form drafts) still get shipped.
+func (l *AgentLoop) sweepOutbox() {
+	mailship.SweepDir(l.Name, l.Dir, l.OnOutboxFailure)
 }
 
 func (l *AgentLoop) maxErrors() int {
@@ -313,6 +322,11 @@ func (l *AgentLoop) Run(ctx context.Context) {
 			l.lifecycle("wrap_up")
 			return
 		}
+
+		// Sweep any unshipped outbox drafts before sleeping. Failures are
+		// surfaced via OnOutboxFailure (which appends to GOALS.md if running),
+		// so this runs before the stale-detection read of goalsAfter below.
+		l.sweepOutbox()
 
 		// Check evaluation results from projects.
 		l.CumulativeCost += l.LastSessionCost

@@ -51,6 +51,12 @@ func init() {
 	// migrate-config
 	migrateConfigCmd.Flags().StringVar(&migrateConfigPath, "config", "config/discord.toml", "Path to config file")
 	rootCmd.AddCommand(migrateConfigCmd)
+
+	// regenerate
+	regenerateMailboxCmd.Flags().StringVar(&regenerateMailboxDir, "dir", "", "Agent directory override")
+	regenerateMailboxCmd.Flags().BoolVar(&regenerateMailboxForce, "force", false, "Overwrite without prompt")
+	regenerateCmd.AddCommand(regenerateMailboxCmd)
+	rootCmd.AddCommand(regenerateCmd)
 }
 
 func Execute() {

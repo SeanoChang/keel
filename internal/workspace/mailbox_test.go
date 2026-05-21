@@ -36,6 +36,35 @@ func TestEnsureMailbox(t *testing.T) {
 	if err := EnsureMailbox(dir); err != nil {
 		t.Errorf("second call should be idempotent: %v", err)
 	}
+
+	// outbox/ drop zone should be created at agent root.
+	outboxInfo, err := os.Stat(filepath.Join(dir, "outbox"))
+	if err != nil || !outboxInfo.IsDir() {
+		t.Errorf("expected outbox/ to be created at agent root: %v", err)
+	}
+
+	// MAILBOX.md should be written on first call.
+	docsPath := filepath.Join(dir, "mailbox", "MAILBOX.md")
+	docs, err := os.ReadFile(docsPath)
+	if err != nil {
+		t.Fatalf("expected MAILBOX.md at %s: %v", docsPath, err)
+	}
+	if !strings.Contains(string(docs), "Drop-zone fallback") {
+		t.Errorf("MAILBOX.md missing expected content")
+	}
+
+	// EnsureMailbox must not overwrite an agent's customized MAILBOX.md.
+	customized := []byte("# Agent's edits\n")
+	if err := os.WriteFile(docsPath, customized, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsureMailbox(dir); err != nil {
+		t.Fatal(err)
+	}
+	again, _ := os.ReadFile(docsPath)
+	if string(again) != string(customized) {
+		t.Errorf("EnsureMailbox overwrote customized MAILBOX.md")
+	}
 }
 
 func TestSlugify(t *testing.T) {

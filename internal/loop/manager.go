@@ -29,8 +29,9 @@ func NewManager() *Manager {
 
 // StartOpts holds optional parameters for Start.
 type StartOpts struct {
-	ProjectsDir  string           // path to projects/ directory (enables eval)
-	OnEvalUpdate func(EvalUpdate) // callback for eval metric notifications
+	ProjectsDir     string           // path to projects/ directory (enables eval)
+	OnEvalUpdate    func(EvalUpdate) // callback for eval metric notifications
+	OnOutboxFailure func(reason, relName string, err error)
 }
 
 func (m *Manager) Start(name, dir string, builder CommandBuilder, sleep time.Duration, archiveEvery int, onOutput func(StreamEvent), onLifecycle func(string), opts *StartOpts) error {
@@ -69,6 +70,7 @@ func (m *Manager) Start(name, dir string, builder CommandBuilder, sleep time.Dur
 	if opts != nil {
 		loop.ProjectsDir = opts.ProjectsDir
 		loop.OnEvalUpdate = opts.OnEvalUpdate
+		loop.OnOutboxFailure = opts.OnOutboxFailure
 	}
 
 	m.loops[name] = rl

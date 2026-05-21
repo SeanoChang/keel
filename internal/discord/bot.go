@@ -16,6 +16,7 @@ import (
 	"github.com/SeanoChang/keel/internal/config"
 	"github.com/SeanoChang/keel/internal/delegation"
 	"github.com/SeanoChang/keel/internal/loop"
+	"github.com/SeanoChang/keel/internal/mailship"
 	"github.com/SeanoChang/keel/internal/schedule"
 	"github.com/SeanoChang/keel/internal/workspace"
 )
@@ -27,6 +28,7 @@ type Bot struct {
 	loopMgr         *loop.Manager
 	tailers         map[string]*LogTailer
 	mailboxWatchers map[string]*MailboxWatcher
+	outboxWatchers  map[string]*OutboxWatcher
 	askWatcher      *AskWatcher
 	sleepBetween    time.Duration
 	archiveEvery    int
@@ -57,6 +59,7 @@ func NewBot(cfg *config.Config, configPath string, sleepBetween time.Duration, a
 		loopMgr:         loop.NewManager(),
 		tailers:         make(map[string]*LogTailer),
 		mailboxWatchers: make(map[string]*MailboxWatcher),
+		outboxWatchers:  make(map[string]*OutboxWatcher),
 		sleepBetween:    sleepBetween,
 		archiveEvery:    archiveEvery,
 		schedStop:       make(chan struct{}),
@@ -100,6 +103,15 @@ func (b *Bot) Start() error {
 		)
 		b.mailboxWatchers[name] = mw
 		go mw.Start()
+
+		// Outbox watcher: real-time auto-rescue of dropped drafts.
+		failureHandler := b.makeOutboxFailureHandler(agentName, agentCh.AgentDir)
+		ow := NewOutboxWatcher(agentName, agentCh.AgentDir, failureHandler)
+		b.outboxWatchers[name] = ow
+		go ow.Start()
+
+		// Startup sweep: pick up files left in outbox/ from before keel started.
+		go mailship.SweepDir(agentName, agentCh.AgentDir, failureHandler)
 	}
 
 	// Start ask watcher for all agents
@@ -153,6 +165,9 @@ func (b *Bot) Stop() {
 	}
 	for _, mw := range b.mailboxWatchers {
 		mw.Stop()
+	}
+	for _, ow := range b.outboxWatchers {
+		ow.Stop()
 	}
 	if b.askWatcher != nil {
 		b.askWatcher.Stop()
@@ -578,8 +593,9 @@ func (b *Bot) sessionHandlers(agentName, channelID, agentDir string) (onOutput f
 	}
 
 	opts = &loop.StartOpts{
-		ProjectsDir:  projectsDir,
-		OnEvalUpdate: onEvalUpdate,
+		ProjectsDir:     projectsDir,
+		OnEvalUpdate:    onEvalUpdate,
+		OnOutboxFailure: b.makeOutboxFailureHandler(agentName, agentDir),
 	}
 
 	return
@@ -685,6 +701,53 @@ func (b *Bot) handleDelegationUpdate(agentName, channelID, agentDir string, resu
 		sendChunked(b.session, channelID,
 			fmt.Sprintf("**%s** — Received results from %s (%d/%d complete)",
 				agentName, result.From, result.CompletedCount, result.TotalCount))
+	}
+}
+
+// outboxPokeRateLimit caps how often a sleeping agent gets a one-shot poke.
+const outboxPokeRateLimit = 10 * time.Minute
+
+// makeOutboxFailureHandler returns a per-agent failure handler that routes
+// shipping failures to the right surface: GOALS.md append + nudge when the
+// loop is running, a rate-limited one-shot poke when asleep, mailbox
+// notification past the rate limit.
+func (b *Bot) makeOutboxFailureHandler(name, dir string) func(reason, relName string, err error) {
+	var mu sync.Mutex
+	var lastPoke time.Time
+	return func(reason, relName string, shipErr error) {
+		detail := reason
+		if detail == "" && shipErr != nil {
+			detail = shipErr.Error()
+		}
+		subject := fmt.Sprintf("Outbox ship failure: %s", relName)
+		body := fmt.Sprintf("Keel could not ship %s.\nReason: %s\n\nFix the draft (frontmatter or path) and save it back into outbox/. Keel will auto-retry.", relName, detail)
+
+		if b.loopMgr.IsRunning(name) {
+			if err := workspace.AppendSystemMessage(dir, subject, body); err != nil {
+				log.Printf("[keel] %s: append system message error: %v", name, err)
+			}
+			b.loopMgr.Nudge(name)
+			return
+		}
+
+		mu.Lock()
+		if time.Since(lastPoke) < outboxPokeRateLimit {
+			mu.Unlock()
+			if err := workspace.WriteMailboxMessage(dir, "keel-system", subject, "important", "notification", body); err != nil {
+				log.Printf("[keel] %s: mailbox notify error: %v", name, err)
+			}
+			return
+		}
+		lastPoke = time.Now()
+		mu.Unlock()
+
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cancel()
+			if err := loop.RunSystemPoke(ctx, name, dir, body); err != nil {
+				log.Printf("[keel] %s: system poke error: %v", name, err)
+			}
+		}()
 	}
 }
 
