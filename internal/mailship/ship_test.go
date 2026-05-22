@@ -27,11 +27,11 @@ func withFakeCubit(t *testing.T, succeed bool) {
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+oldPath)
 }
 
-// agentSkeleton sets up a minimal agent dir with outbox/ and mailbox/drafts/.
+// agentSkeleton sets up a minimal agent dir with mailbox/outbox/ and mailbox/drafts/.
 func agentSkeleton(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	for _, sub := range []string{"outbox", "mailbox/drafts", "mailbox/sent"} {
+	for _, sub := range []string{"mailbox/outbox", "mailbox/drafts", "mailbox/sent"} {
 		if err := os.MkdirAll(filepath.Join(dir, sub), 0755); err != nil {
 			t.Fatal(err)
 		}
@@ -48,16 +48,16 @@ func TestTryShip_ValidFlat(t *testing.T) {
 	withFakeCubit(t, true)
 	dir := agentSkeleton(t)
 
-	if err := os.WriteFile(filepath.Join(dir, "outbox", "hello.md"), []byte(validDraft("bob")), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "mailbox/outbox", "hello.md"), []byte(validDraft("bob")), 0644); err != nil {
 		t.Fatal(err)
 	}
 	res := TryShip("alice", dir, "hello.md")
 	if !res.Sent {
 		t.Fatalf("expected Sent=true, got reason=%q err=%v", res.Reason, res.Err)
 	}
-	// File should have been moved out of outbox/ into mailbox/drafts/.
-	if _, err := os.Stat(filepath.Join(dir, "outbox", "hello.md")); !os.IsNotExist(err) {
-		t.Errorf("outbox/hello.md should be gone after ship")
+	// File should have been moved out of mailbox/outbox/ into mailbox/drafts/.
+	if _, err := os.Stat(filepath.Join(dir, "mailbox/outbox", "hello.md")); !os.IsNotExist(err) {
+		t.Errorf("mailbox/outbox/hello.md should be gone after ship")
 	}
 	if _, err := os.Stat(filepath.Join(dir, "mailbox", "drafts", "hello.md")); err != nil {
 		t.Errorf("expected mailbox/drafts/hello.md to exist: %v", err)
@@ -76,7 +76,7 @@ func TestTryShip_ValidDirForm(t *testing.T) {
 	withFakeCubit(t, true)
 	dir := agentSkeleton(t)
 
-	dirDraft := filepath.Join(dir, "outbox", "report")
+	dirDraft := filepath.Join(dir, "mailbox/outbox", "report")
 	if err := os.MkdirAll(dirDraft, 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +101,7 @@ func TestTryShip_MissingTo(t *testing.T) {
 	dir := agentSkeleton(t)
 
 	bad := "---\nfrom: alice\nsubject: \"hi\"\ntype: notification\n---\n\nbody\n"
-	if err := os.WriteFile(filepath.Join(dir, "outbox", "bad.md"), []byte(bad), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "mailbox/outbox", "bad.md"), []byte(bad), 0644); err != nil {
 		t.Fatal(err)
 	}
 	res := TryShip("alice", dir, "bad.md")
@@ -111,10 +111,10 @@ func TestTryShip_MissingTo(t *testing.T) {
 	if !strings.Contains(res.Reason, "missing 'to:'") {
 		t.Errorf("unexpected reason: %q", res.Reason)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "outbox", "bad.md")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(dir, "mailbox/outbox", "bad.md")); !os.IsNotExist(err) {
 		t.Errorf("bad.md should have been renamed")
 	}
-	invPath := filepath.Join(dir, "outbox", "bad.md.invalid.md")
+	invPath := filepath.Join(dir, "mailbox/outbox", "bad.md.invalid.md")
 	data, err := os.ReadFile(invPath)
 	if err != nil {
 		t.Fatalf("expected invalid file: %v", err)
@@ -129,7 +129,7 @@ func TestTryShip_DelegationRejected(t *testing.T) {
 	dir := agentSkeleton(t)
 
 	d := "---\nfrom: alice\nto: bob\nsubject: \"hi\"\ntype: delegation\n---\n\nbody\n"
-	if err := os.WriteFile(filepath.Join(dir, "outbox", "del.md"), []byte(d), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "mailbox/outbox", "del.md"), []byte(d), 0644); err != nil {
 		t.Fatal(err)
 	}
 	res := TryShip("alice", dir, "del.md")
@@ -144,7 +144,7 @@ func TestTryShip_DelegationRejected(t *testing.T) {
 func TestTryShip_SelfSendAllowed(t *testing.T) {
 	withFakeCubit(t, true)
 	dir := agentSkeleton(t)
-	if err := os.WriteFile(filepath.Join(dir, "outbox", "self.md"), []byte(validDraft("alice")), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "mailbox/outbox", "self.md"), []byte(validDraft("alice")), 0644); err != nil {
 		t.Fatal(err)
 	}
 	res := TryShip("alice", dir, "self.md")
@@ -156,7 +156,7 @@ func TestTryShip_SelfSendAllowed(t *testing.T) {
 func TestTryShip_CubitFailureLeavesFileInDrafts(t *testing.T) {
 	withFakeCubit(t, false)
 	dir := agentSkeleton(t)
-	if err := os.WriteFile(filepath.Join(dir, "outbox", "retry.md"), []byte(validDraft("bob")), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "mailbox/outbox", "retry.md"), []byte(validDraft("bob")), 0644); err != nil {
 		t.Fatal(err)
 	}
 	res := TryShip("alice", dir, "retry.md")
@@ -166,7 +166,7 @@ func TestTryShip_CubitFailureLeavesFileInDrafts(t *testing.T) {
 	if res.Err == nil {
 		t.Fatal("expected transport error")
 	}
-	// File should have moved out of outbox/ (we did the rename before invoking cubit),
+	// File should have moved out of mailbox/outbox/ (we did the rename before invoking cubit),
 	// but should remain in mailbox/drafts/ for retry/recovery.
 	if _, err := os.Stat(filepath.Join(dir, "mailbox", "drafts", "retry.md")); err != nil {
 		t.Errorf("file should remain in mailbox/drafts/ after cubit failure: %v", err)
@@ -199,7 +199,7 @@ func TestTryShip_DirFormMissingMailNoFailureCallback(t *testing.T) {
 	// stay silent rather than firing a "missing mail.md" false alarm.
 	withFakeCubit(t, true)
 	dir := agentSkeleton(t)
-	if err := os.MkdirAll(filepath.Join(dir, "outbox", "half-written"), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Join(dir, "mailbox/outbox", "half-written"), 0755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -220,9 +220,9 @@ func TestSweepDir_SkipsInvalidAndDotfiles(t *testing.T) {
 	dir := agentSkeleton(t)
 
 	// One valid file, one already-invalidated, one dotfile.
-	os.WriteFile(filepath.Join(dir, "outbox", "ok.md"), []byte(validDraft("bob")), 0644)
-	os.WriteFile(filepath.Join(dir, "outbox", "stale.md.invalid.md"), []byte("x"), 0644)
-	os.WriteFile(filepath.Join(dir, "outbox", ".hidden"), []byte("x"), 0644)
+	os.WriteFile(filepath.Join(dir, "mailbox/outbox", "ok.md"), []byte(validDraft("bob")), 0644)
+	os.WriteFile(filepath.Join(dir, "mailbox/outbox", "stale.md.invalid.md"), []byte("x"), 0644)
+	os.WriteFile(filepath.Join(dir, "mailbox/outbox", ".hidden"), []byte("x"), 0644)
 
 	var failures int
 	SweepDir("alice", dir, func(reason, relName string, err error) { failures++ })
@@ -234,7 +234,7 @@ func TestSweepDir_SkipsInvalidAndDotfiles(t *testing.T) {
 	}
 	// Invalid + hidden should still be present, untouched.
 	for _, name := range []string{"stale.md.invalid.md", ".hidden"} {
-		if _, err := os.Stat(filepath.Join(dir, "outbox", name)); err != nil {
+		if _, err := os.Stat(filepath.Join(dir, "mailbox/outbox", name)); err != nil {
 			t.Errorf("%s should remain after sweep: %v", name, err)
 		}
 	}

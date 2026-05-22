@@ -1,4 +1,4 @@
-// Package mailship validates and ships drafts found in an agent's outbox/.
+// Package mailship validates and ships drafts found in an agent's mailbox/outbox/.
 // It is invoked by the real-time outbox watcher and by the session-end /
 // startup sweep so both paths share one shipping implementation.
 package mailship
@@ -26,13 +26,13 @@ type ShipResult struct {
 // shipTimeout caps how long a single cubit send may run.
 const shipTimeout = 15 * time.Second
 
-// TryShip validates an outbox entry at <agentDir>/outbox/<relName> and ships it
-// via `cubit send`. Returns Sent=true on success. On validation failure, renames
+// TryShip validates an outbox entry at <agentDir>/mailbox/outbox/<relName> and ships
+// it via `cubit send`. Returns Sent=true on success. On validation failure, renames
 // to <relName>.invalid.md and returns Sent=false with Reason set. On transport
 // failure, leaves the file in <agentDir>/mailbox/drafts/<relName>; the next
 // sweep or watcher fire retries.
 func TryShip(agentName, agentDir, relName string) ShipResult {
-	outbox := filepath.Join(agentDir, "outbox")
+	outbox := filepath.Join(agentDir, "mailbox", "outbox")
 	srcPath := filepath.Join(outbox, relName)
 
 	info, err := os.Stat(srcPath)
@@ -75,7 +75,7 @@ func TryShip(agentName, agentDir, relName string) ShipResult {
 		return invalidate(srcPath, relName, info.IsDir(), data, "missing 'to:' field")
 	}
 	if fm["type"] == "delegation" {
-		return invalidate(srcPath, relName, info.IsDir(), data, "delegations must use 'cubit delegate', not outbox/")
+		return invalidate(srcPath, relName, info.IsDir(), data, "delegations must use 'cubit delegate', not mailbox/outbox/")
 	}
 
 	// Move outbox → mailbox/drafts so cubit send receives the canonical path.
@@ -121,8 +121,8 @@ func invalidate(srcPath, relName string, isDir bool, fmData []byte, reason strin
 		if err := os.Rename(srcPath, dstPath); err != nil {
 			// Rename failed: do not set Reason (callers branch on Reason to
 			// decide the recovery instructions, and the file is still at its
-			// original outbox/ path, not at .invalid/). Embed the validation
-			// reason in the error so it isn't lost.
+			// original mailbox/outbox/ path, not at .invalid/). Embed the
+			// validation reason in the error so it isn't lost.
 			return ShipResult{Err: fmt.Errorf("rename invalid dir (%s): %w", reason, err)}
 		}
 		// Prepend reason to mail.md so the agent sees it on open.
@@ -149,11 +149,11 @@ func prependReason(path, reason string) error {
 	return os.WriteFile(path, append([]byte(header), existing...), 0644)
 }
 
-// SweepDir walks <agentDir>/outbox/ and invokes TryShip on every eligible entry.
-// Skips dotfiles and previously-invalidated entries. Failures are forwarded to
-// onFailure (may be nil).
+// SweepDir walks <agentDir>/mailbox/outbox/ and invokes TryShip on every eligible
+// entry. Skips dotfiles and previously-invalidated entries. Failures are forwarded
+// to onFailure (may be nil).
 func SweepDir(agentName, agentDir string, onFailure func(reason, relName string, err error)) {
-	outbox := filepath.Join(agentDir, "outbox")
+	outbox := filepath.Join(agentDir, "mailbox", "outbox")
 	entries, err := os.ReadDir(outbox)
 	if err != nil {
 		return // missing dir = nothing to sweep

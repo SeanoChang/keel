@@ -21,6 +21,7 @@ func TestEnsureMailbox(t *testing.T) {
 		"mailbox/drafts",
 		"mailbox/sent",
 		"mailbox/read",
+		"mailbox/outbox",
 	} {
 		path := filepath.Join(dir, sub)
 		info, err := os.Stat(path)
@@ -37,10 +38,10 @@ func TestEnsureMailbox(t *testing.T) {
 		t.Errorf("second call should be idempotent: %v", err)
 	}
 
-	// outbox/ drop zone should be created at agent root.
-	outboxInfo, err := os.Stat(filepath.Join(dir, "outbox"))
+	// mailbox/outbox/ drop zone should be created alongside the mailbox tree.
+	outboxInfo, err := os.Stat(filepath.Join(dir, "mailbox", "outbox"))
 	if err != nil || !outboxInfo.IsDir() {
-		t.Errorf("expected outbox/ to be created at agent root: %v", err)
+		t.Errorf("expected mailbox/outbox/ to be created: %v", err)
 	}
 
 	// MAILBOX.md should be written on first call.

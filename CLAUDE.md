@@ -68,7 +68,7 @@ Each agent is a directory under `~/.ark/agents-home/<name>/` with:
 - `DELIVER.md` — deliverable content relayed to Discord channel, cleared after delivery
 - `mailbox/` — CSP-async messaging (inbox/{important,priority,all}, starred, drafts, sent, read)
 - `mailbox/MAILBOX.md` — agent-facing messaging conventions; written once by `EnsureMailbox`, refresh with `keel regenerate mailbox`
-- `outbox/` — drop-zone fallback for outgoing mail; keel watches and auto-ships via `cubit send` (only this path is rescued; `mailbox/drafts/` still requires explicit `cubit send`)
+- `mailbox/outbox/` — drop-zone for outgoing mail; keel watches and auto-ships via `cubit send` (only this path is recognized; `mailbox/drafts/` still requires explicit `cubit send`)
 - `.claude/agents/<name>.md` — Claude Code agent definition
 - `schedule/` — self-scheduled future goals (see below)
 - `projects/` — persistent versioned work, each subdirectory is a git repo (managed via cubit)

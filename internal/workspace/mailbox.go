@@ -18,21 +18,19 @@ var mailboxDirs = []string{
 	"mailbox/drafts",
 	"mailbox/sent",
 	"mailbox/read",
+	"mailbox/outbox",
 	"mailbox/delegations/active",
 	"mailbox/delegations/done",
 }
 
-// EnsureMailbox creates the full mailbox directory tree if any part is missing.
-// It also creates the agent-root outbox/ drop zone and writes mailbox/MAILBOX.md
-// (only if absent — never overwriting an agent's customized copy).
+// EnsureMailbox creates the full mailbox directory tree if any part is missing
+// (including mailbox/outbox/, the drop-zone keel watches) and writes
+// mailbox/MAILBOX.md only if absent — never overwriting an agent's customized copy.
 func EnsureMailbox(dir string) error {
 	for _, sub := range mailboxDirs {
 		if err := os.MkdirAll(filepath.Join(dir, sub), 0755); err != nil {
 			return fmt.Errorf("create %s: %w", sub, err)
 		}
-	}
-	if err := os.MkdirAll(filepath.Join(dir, "outbox"), 0755); err != nil {
-		return fmt.Errorf("create outbox: %w", err)
 	}
 	docsPath := filepath.Join(dir, "mailbox", "MAILBOX.md")
 	if _, err := os.Stat(docsPath); os.IsNotExist(err) {

@@ -17,7 +17,7 @@ import (
 // write so attachments arriving alongside mail.md land before cubit send runs.
 const dirDebounce = 1 * time.Second
 
-// OutboxWatcher watches <agentDir>/outbox/ and routes new drafts through
+// OutboxWatcher watches <agentDir>/mailbox/outbox/ and routes new drafts through
 // mailship.TryShip. It is the real-time complement to the session-end sweep.
 type OutboxWatcher struct {
 	agentName string
@@ -50,13 +50,13 @@ func (w *OutboxWatcher) Start() {
 	}
 	defer watcher.Close()
 
-	outbox := filepath.Join(w.agentDir, "outbox")
+	outbox := filepath.Join(w.agentDir, "mailbox", "outbox")
 	if err := os.MkdirAll(outbox, 0755); err != nil {
-		log.Printf("[keel] %s: outbox mkdir error: %v", w.agentName, err)
+		log.Printf("[keel] %s: mailbox/outbox mkdir error: %v", w.agentName, err)
 		return
 	}
 	if err := watcher.Add(outbox); err != nil {
-		log.Printf("[keel] %s: outbox watch error on %s: %v", w.agentName, outbox, err)
+		log.Printf("[keel] %s: mailbox/outbox watch error on %s: %v", w.agentName, outbox, err)
 		return
 	}
 

@@ -110,7 +110,7 @@ func (b *Bot) Start() error {
 		b.outboxWatchers[name] = ow
 		go ow.Start()
 
-		// Startup sweep: pick up files left in outbox/ from before keel started.
+		// Startup sweep: pick up files left in mailbox/outbox/ from before keel started.
 		go mailship.SweepDir(agentName, agentCh.AgentDir, failureHandler)
 	}
 
@@ -719,17 +719,18 @@ func (b *Bot) makeOutboxFailureHandler(name, dir string) func(reason, relName st
 		var body string
 		if reason != "" {
 			// Validation failure: TryShip renamed the file in-place to
-			// outbox/<relName>.invalid.md (flat) or outbox/<relName>.invalid/
-			// (directory form), with the reason as the first line of the file.
-			body = fmt.Sprintf("Keel could not ship outbox/%s.\nReason: %s\n\nThe draft was renamed to outbox/%s.invalid.md (flat) or outbox/%s.invalid/ (directory form) with the reason on the first line. To recover: fix the issue, then rename the file back to its original name (outbox/%s) and save — keel will auto-retry.", relName, reason, relName, relName, relName)
+			// mailbox/outbox/<relName>.invalid.md (flat) or
+			// mailbox/outbox/<relName>.invalid/ (directory form), with the
+			// reason as the first line of the file.
+			body = fmt.Sprintf("Keel could not ship mailbox/outbox/%s.\nReason: %s\n\nThe draft was renamed to mailbox/outbox/%s.invalid.md (flat) or mailbox/outbox/%s.invalid/ (directory form) with the reason on the first line. To recover: fix the issue, then rename the file back to its original name (mailbox/outbox/%s) and save — keel will auto-retry.", relName, reason, relName, relName, relName)
 		} else {
 			detail := "unknown error"
 			if shipErr != nil {
 				detail = shipErr.Error()
 			}
-			// Transport failure: TryShip already moved outbox/<relName> to
-			// mailbox/drafts/<relName>, then cubit send failed.
-			body = fmt.Sprintf("Keel moved outbox/%s to mailbox/drafts/%s but `cubit send` failed.\nError: %s\n\nResolve the cubit issue (recipient agent exists? cubit on PATH?), then run: cubit send mailbox/drafts/%s\nOr move the file back to outbox/ for auto-retry on next save.", relName, relName, detail, relName)
+			// Transport failure: TryShip already moved mailbox/outbox/<relName>
+			// to mailbox/drafts/<relName>, then cubit send failed.
+			body = fmt.Sprintf("Keel moved mailbox/outbox/%s to mailbox/drafts/%s but `cubit send` failed.\nError: %s\n\nResolve the cubit issue (recipient agent exists? cubit on PATH?), then run: cubit send mailbox/drafts/%s\nOr move the file back to mailbox/outbox/ for auto-retry on next save.", relName, relName, detail, relName)
 		}
 
 		if b.loopMgr.IsRunning(name) {
