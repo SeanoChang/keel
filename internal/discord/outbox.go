@@ -17,12 +17,23 @@ import (
 // write so attachments arriving alongside mail.md land before cubit send runs.
 const dirDebounce = 1 * time.Second
 
+// ShippedInfo is the payload passed to the onShipped callback when a draft
+// has been successfully shipped via cubit send.
+type ShippedInfo struct {
+	ID        string // filename stem (correlation key with recipient's inbox/)
+	From      string // agent that shipped
+	To        string // from frontmatter
+	Subject   string // from frontmatter
+	Timestamp time.Time
+}
+
 // OutboxWatcher watches <agentDir>/mailbox/outbox/ and routes new drafts through
 // mailship.TryShip. It is the real-time complement to the session-end sweep.
 type OutboxWatcher struct {
 	agentName string
 	agentDir  string
 	onFailure func(reason, relName string, err error)
+	onShipped func(info ShippedInfo)
 	stop      chan struct{}
 	once      sync.Once
 
@@ -31,11 +42,17 @@ type OutboxWatcher struct {
 	inFlight map[string]bool        // relNames currently being shipped
 }
 
-func NewOutboxWatcher(agentName, agentDir string, onFailure func(reason, relName string, err error)) *OutboxWatcher {
+// NewOutboxWatcher constructs a watcher. onShipped may be nil if the caller
+// doesn't care about successful ships (comms dashboard wires it).
+func NewOutboxWatcher(agentName, agentDir string,
+	onFailure func(reason, relName string, err error),
+	onShipped func(info ShippedInfo),
+) *OutboxWatcher {
 	return &OutboxWatcher{
 		agentName: agentName,
 		agentDir:  agentDir,
 		onFailure: onFailure,
+		onShipped: onShipped,
 		stop:      make(chan struct{}),
 		timers:    make(map[string]*time.Timer),
 		inFlight:  make(map[string]bool),
@@ -81,6 +98,15 @@ func (w *OutboxWatcher) Start() {
 			log.Printf("[keel] %s: outbox watcher error: %v", w.agentName, err)
 		}
 	}
+}
+
+// stemOf strips a trailing .md from a relName so the stem matches the
+// recipient's inbox filename (cubit send preserves the basename).
+func stemOf(relName string) string {
+	if strings.HasSuffix(relName, ".md") {
+		return strings.TrimSuffix(relName, ".md")
+	}
+	return relName
 }
 
 func (w *OutboxWatcher) Stop() {
@@ -157,6 +183,15 @@ func (w *OutboxWatcher) ship(relName string) {
 	res := mailship.TryShip(w.agentName, w.agentDir, relName)
 	if res.Sent {
 		log.Printf("[keel] %s: outbox shipped %s", w.agentName, relName)
+		if w.onShipped != nil {
+			w.onShipped(ShippedInfo{
+				ID:        stemOf(relName),
+				From:      w.agentName,
+				To:        res.To,
+				Subject:   res.Subject,
+				Timestamp: time.Now().UTC(),
+			})
+		}
 		return
 	}
 	if res.Err != nil {

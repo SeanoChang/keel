@@ -14,6 +14,7 @@ type BotConfig struct {
 	SetupChannelID  string   `toml:"setup_channel_id"`
 	StatusChannelID string   `toml:"status_channel_id"`
 	ErrorChannelID  string   `toml:"error_channel_id"`  // optional: channel for error/retry events
+	CommsChannelID  string   `toml:"comms_channel_id"`  // optional: channel for the global agent comms dashboard
 	AdminUsers      []string `toml:"admin_users"`        // Discord user IDs allowed to interact
 	PlistLabel      string   `toml:"plist_label"`        // launchd label for restart (e.g. "com.keel.serve")
 }

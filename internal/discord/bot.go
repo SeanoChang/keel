@@ -13,6 +13,7 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 
+	"github.com/SeanoChang/keel/internal/comms"
 	"github.com/SeanoChang/keel/internal/config"
 	"github.com/SeanoChang/keel/internal/delegation"
 	"github.com/SeanoChang/keel/internal/loop"
@@ -20,6 +21,14 @@ import (
 	"github.com/SeanoChang/keel/internal/schedule"
 	"github.com/SeanoChang/keel/internal/workspace"
 )
+
+const commsReconcileInterval = 1 * time.Hour
+const commsWindow = 24 * time.Hour
+
+// commsDiscordTimeout bounds a single dashboard Send/Edit so a hung Discord
+// HTTP call can't freeze a dashboard indefinitely. The dashboard's render
+// loop self-recovers on the next event after a timeout.
+const commsDiscordTimeout = 10 * time.Second
 
 type Bot struct {
 	session         *discordgo.Session
@@ -39,6 +48,15 @@ type Bot struct {
 	initMu          sync.Mutex        // guards initSession
 	initWatcher     *InitWatcher      // watches agents-home for .init-pending
 	configPath      string            // path to discord.toml for config writes
+
+	// Comms dashboard wiring.
+	commsTracker        *comms.Tracker
+	commsState          *comms.StateStore
+	commsGlobal         *comms.Dashboard
+	commsAgent          map[string]*comms.Dashboard
+	commsAgentMu        sync.Mutex
+	commsReconcileStop  chan struct{}
+	commsReconcileDone  chan struct{}
 }
 
 func NewBot(cfg *config.Config, configPath string, sleepBetween time.Duration, archiveEvery int) (*Bot, error) {
@@ -53,17 +71,20 @@ func NewBot(cfg *config.Config, configPath string, sleepBetween time.Duration, a
 	}
 
 	b := &Bot{
-		session:         session,
-		cfg:             cfg,
-		configPath:      configPath,
-		loopMgr:         loop.NewManager(),
-		tailers:         make(map[string]*LogTailer),
-		mailboxWatchers: make(map[string]*MailboxWatcher),
-		outboxWatchers:  make(map[string]*OutboxWatcher),
-		sleepBetween:    sleepBetween,
-		archiveEvery:    archiveEvery,
-		schedStop:       make(chan struct{}),
-		schedDone:       make(chan struct{}),
+		session:            session,
+		cfg:                cfg,
+		configPath:         configPath,
+		loopMgr:            loop.NewManager(),
+		tailers:            make(map[string]*LogTailer),
+		mailboxWatchers:    make(map[string]*MailboxWatcher),
+		outboxWatchers:     make(map[string]*OutboxWatcher),
+		commsAgent:         make(map[string]*comms.Dashboard),
+		sleepBetween:       sleepBetween,
+		archiveEvery:       archiveEvery,
+		schedStop:          make(chan struct{}),
+		schedDone:          make(chan struct{}),
+		commsReconcileStop: make(chan struct{}),
+		commsReconcileDone: make(chan struct{}),
 	}
 
 	session.AddHandler(b.onMessageCreate)
@@ -77,6 +98,16 @@ func (b *Bot) Start() error {
 		return fmt.Errorf("open discord connection: %w", err)
 	}
 	log.Printf("[keel] Discord bot connected")
+
+	// Comms tracker is constructed before watchers so their callbacks can push
+	// events into it. Notify is wired after dashboards exist (two-phase init).
+	b.commsTracker = comms.New(commsWindow, nil)
+	statePath := commsStatePath()
+	if state, err := comms.OpenStateStore(statePath); err != nil {
+		log.Printf("[keel] comms: open state %s: %v", statePath, err)
+	} else {
+		b.commsState = state
+	}
 
 	for name, ch := range b.cfg.Channels {
 		// Startup check: warn if agent has INBOX.md but no mailbox/
@@ -99,20 +130,88 @@ func (b *Bot) Start() error {
 			},
 			func(result *delegation.RouteResult) {
 				b.handleDelegationUpdate(agentName, agentCh.ChannelID, agentCh.AgentDir, result)
+				// Push the lifecycle event into the comms tracker so the
+				// dashboard reflects sub-task progress in real time instead
+				// of waiting up to an hour for the next reconcile.
+				status := comms.StatusPending
+				if result.AllComplete {
+					status = comms.StatusComplete
+				}
+				b.commsTracker.RecordDelegation(comms.Event{
+					ID:            "deleg-" + result.DelegationID,
+					Kind:          comms.KindDelegation,
+					From:          agentName,
+					To:            result.From,
+					Subject:       "delegation",
+					Status:        status,
+					Timestamp:     time.Now().UTC(),
+					DelegationID:  result.DelegationID,
+					SubTasksDone:  result.CompletedCount,
+					SubTasksTotal: result.TotalCount,
+				})
+			},
+			func(info DeliveredInfo) {
+				b.commsTracker.RecordDelivered(info.ID)
 			},
 		)
 		b.mailboxWatchers[name] = mw
 		go mw.Start()
 
 		// Outbox watcher: real-time auto-rescue of dropped drafts.
-		failureHandler := b.makeOutboxFailureHandler(agentName, agentCh.AgentDir)
-		ow := NewOutboxWatcher(agentName, agentCh.AgentDir, failureHandler)
+		baseFailure := b.makeOutboxFailureHandler(agentName, agentCh.AgentDir)
+		failureHandler := func(reason, relName string, err error) {
+			baseFailure(reason, relName, err)
+			// Also surface the failure on the comms dashboard. The watcher
+			// fires before any RecordSent (which only happens on Sent=true),
+			// so RecordFailed must insert a row from scratch. We mine
+			// metadata from the filename: `{ts}-{from}-{slug}.md`.
+			detail := reason
+			if detail == "" && err != nil {
+				detail = err.Error()
+			}
+			stem := stemOf(relName)
+			ts, from, slug, ok := comms.ParseFilenameStem(stem)
+			if !ok {
+				ts = time.Now().UTC()
+				from = agentName
+			}
+			b.commsTracker.RecordFailed(comms.Event{
+				ID:        stem,
+				Kind:      comms.KindMessage,
+				From:      from,
+				To:        "",
+				Subject:   slug,
+				Status:    comms.StatusFailed,
+				Failure:   detail,
+				Timestamp: ts,
+			})
+		}
+		ow := NewOutboxWatcher(agentName, agentCh.AgentDir, failureHandler,
+			func(info ShippedInfo) {
+				b.commsTracker.RecordSent(comms.Event{
+					ID:        info.ID,
+					Kind:      comms.KindMessage,
+					From:      info.From,
+					To:        info.To,
+					Subject:   info.Subject,
+					Status:    comms.StatusSent,
+					Timestamp: info.Timestamp,
+				})
+			},
+		)
 		b.outboxWatchers[name] = ow
 		go ow.Start()
 
 		// Startup sweep: pick up files left in mailbox/outbox/ from before keel started.
 		go mailship.SweepDir(agentName, agentCh.AgentDir, failureHandler)
 	}
+
+	// Construct comms dashboards (global + per-agent) and wire tracker.notify
+	// to fan out to every dashboard. Dashboards exist after watchers so the
+	// constructor's state-store read is observable in tests.
+	b.buildCommsDashboards()
+	b.bootSeedCommsAndRender()
+	go b.runCommsReconcile()
 
 	// Start ask watcher for all agents
 	askDirs := make(map[string]string)
@@ -159,6 +258,8 @@ func (b *Bot) Start() error {
 func (b *Bot) Stop() {
 	close(b.schedStop)
 	<-b.schedDone
+	close(b.commsReconcileStop)
+	<-b.commsReconcileDone
 	b.loopMgr.StopAll()
 	for _, t := range b.tailers {
 		t.Stop()
@@ -177,6 +278,167 @@ func (b *Bot) Stop() {
 	}
 	b.session.Close()
 	log.Printf("[keel] Discord bot disconnected")
+}
+
+// commsStatePath returns ~/.ark/keel-state/comms.json (overridable via
+// XDG_STATE_HOME for portability).
+func commsStatePath() string {
+	if xdg := os.Getenv("XDG_STATE_HOME"); xdg != "" {
+		return filepath.Join(xdg, "keel", "comms.json")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return "comms.json"
+	}
+	return filepath.Join(home, ".ark", "keel-state", "comms.json")
+}
+
+// discordgoSender adapts *discordgo.Session to comms.MessageSender. Each call
+// runs under commsDiscordTimeout so a hung HTTP request can't hold the
+// dashboard's renderMu indefinitely.
+type discordgoSender struct{ s *discordgo.Session }
+
+func (a discordgoSender) Send(channelID, content string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), commsDiscordTimeout)
+	defer cancel()
+	msg, err := a.s.ChannelMessageSend(channelID, content, discordgo.WithContext(ctx))
+	if err != nil {
+		return "", err
+	}
+	return msg.ID, nil
+}
+
+func (a discordgoSender) Edit(channelID, messageID, content string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), commsDiscordTimeout)
+	defer cancel()
+	_, err := a.s.ChannelMessageEdit(channelID, messageID, content, discordgo.WithContext(ctx))
+	return err
+}
+
+// buildCommsDashboards constructs the global dashboard (if configured) and one
+// per agent. Must be called after b.commsTracker exists.
+func (b *Bot) buildCommsDashboards() {
+	sender := discordgoSender{s: b.session}
+	if b.cfg.Bot.CommsChannelID != "" {
+		b.commsGlobal = comms.NewDashboard(sender, b.cfg.Bot.CommsChannelID,
+			comms.Scope{Title: "Agent Comms"}, b.commsTracker, b.commsState)
+	}
+	b.cfgMu.RLock()
+	channels := make(map[string]config.ChannelConfig, len(b.cfg.Channels))
+	for name, ch := range b.cfg.Channels {
+		channels[name] = ch
+	}
+	b.cfgMu.RUnlock()
+
+	b.commsAgentMu.Lock()
+	for name, ch := range channels {
+		b.commsAgent[name] = comms.NewDashboard(sender, ch.ChannelID,
+			comms.Scope{Title: name + " comms", AgentFilter: name}, b.commsTracker, b.commsState)
+	}
+	b.commsAgentMu.Unlock()
+
+	b.commsTracker.SetNotify(b.notifyAllCommsDashboards)
+}
+
+// snapshotAgentDashboards returns a copy of the per-agent dashboard map so
+// callers can iterate without holding commsAgentMu across slow operations
+// (Discord I/O, render, etc).
+func (b *Bot) snapshotAgentDashboards() map[string]*comms.Dashboard {
+	b.commsAgentMu.Lock()
+	defer b.commsAgentMu.Unlock()
+	out := make(map[string]*comms.Dashboard, len(b.commsAgent))
+	for name, d := range b.commsAgent {
+		out[name] = d
+	}
+	return out
+}
+
+func (b *Bot) notifyAllCommsDashboards() {
+	if b.commsGlobal != nil {
+		b.commsGlobal.Notify()
+	}
+	for _, d := range b.snapshotAgentDashboards() {
+		d.Notify()
+	}
+}
+
+// bootSeedCommsAndRender scans every agent's mailbox on startup so the
+// dashboards show historical activity immediately rather than waiting for the
+// first new event. Renders happen outside commsAgentMu so a slow Discord
+// network doesn't block other watcher events trying to enqueue notifies.
+func (b *Bot) bootSeedCommsAndRender() {
+	b.commsTracker.Reconcile(b.agentDirs())
+	if b.commsGlobal != nil {
+		if err := b.commsGlobal.Render(); err != nil {
+			log.Printf("[keel] comms: initial global render: %v", err)
+		}
+	}
+	for name, d := range b.snapshotAgentDashboards() {
+		if err := d.Render(); err != nil {
+			log.Printf("[keel] comms: initial render for %s: %v", name, err)
+		}
+	}
+}
+
+// runCommsReconcile is the hourly maintenance goroutine. It reloads
+// discord.toml so newly spawned agents pick up a dashboard without keel being
+// restarted, then reconciles the tracker against disk.
+func (b *Bot) runCommsReconcile() {
+	defer close(b.commsReconcileDone)
+	ticker := time.NewTicker(commsReconcileInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-b.commsReconcileStop:
+			return
+		case <-ticker.C:
+			b.reloadAgentsAndReconcile()
+		}
+	}
+}
+
+func (b *Bot) reloadAgentsAndReconcile() {
+	newCfg, err := config.Load(b.configPath)
+	if err != nil {
+		log.Printf("[keel] comms: reload config: %v", err)
+		return
+	}
+
+	sender := discordgoSender{s: b.session}
+	b.cfgMu.Lock()
+	for name, ch := range newCfg.Channels {
+		if _, ok := b.cfg.Channels[name]; ok {
+			continue
+		}
+		b.cfg.Channels[name] = ch
+		// Hot-reload covers ONLY the comms dashboard for the new agent. The
+		// agent's LogTailer / MailboxWatcher / OutboxWatcher and ask watcher
+		// are still constructed only in Start(), so log streaming, mailbox
+		// nudging, and outbox auto-rescue for this new agent require a
+		// `keel serve` restart. Operators see this warning so the partial
+		// state is visible, not silent.
+		log.Printf("[keel] comms: discovered new agent %s — spawning dashboard. "+
+			"NOTE: LogTailer/MailboxWatcher/OutboxWatcher still require `keel serve` restart.", name)
+		b.commsAgentMu.Lock()
+		b.commsAgent[name] = comms.NewDashboard(sender, ch.ChannelID,
+			comms.Scope{Title: name + " comms", AgentFilter: name}, b.commsTracker, b.commsState)
+		b.commsAgentMu.Unlock()
+	}
+	b.cfgMu.Unlock()
+
+	b.commsTracker.Reconcile(b.agentDirs())
+	b.commsTracker.Evict()
+	b.notifyAllCommsDashboards()
+}
+
+func (b *Bot) agentDirs() map[string]string {
+	b.cfgMu.RLock()
+	defer b.cfgMu.RUnlock()
+	out := make(map[string]string, len(b.cfg.Channels))
+	for name, ch := range b.cfg.Channels {
+		out[name] = ch.AgentDir
+	}
+	return out
 }
 
 func (b *Bot) resolveAgentsHome() string {

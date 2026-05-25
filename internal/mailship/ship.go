@@ -21,6 +21,11 @@ type ShipResult struct {
 	Sent   bool
 	Reason string // validation failure description (empty when transport failed)
 	Err    error  // transport error (cubit nonzero, timeout, missing binary)
+
+	// Populated on Sent=true so callers (comms dashboard) can avoid re-parsing
+	// the file after it's been moved.
+	To      string
+	Subject string
 }
 
 // shipTimeout caps how long a single cubit send may run.
@@ -105,7 +110,11 @@ func TryShip(agentName, agentDir, relName string) ShipResult {
 		subject = relName
 	}
 	_ = workspace.LogMailboxEvent(agentDir, agentName, "outbox-ship", subject)
-	return ShipResult{Sent: true}
+	return ShipResult{
+		Sent:    true,
+		To:      strings.Trim(fm["to"], `"'`),
+		Subject: strings.Trim(subject, `"'`),
+	}
 }
 
 // invalidate renames a draft to its .invalid form so the watcher and sweep stop
