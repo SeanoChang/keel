@@ -13,6 +13,16 @@ import (
 	"github.com/SeanoChang/keel/internal/workspace"
 )
 
+// DeliveredInfo is the payload passed to onDelivered when a new message
+// lands in this agent's inbox. The ID matches the sender's outbox filename
+// stem so the comms tracker can correlate sent → delivered.
+type DeliveredInfo struct {
+	ID       string
+	From     string
+	To       string
+	Category string // "important" | "priority" | "all"
+}
+
 // MailboxWatcher watches an agent's mailbox/inbox/ for new messages
 // and calls onMessage when a new message is created.
 // Delegation-responses are intercepted and routed via the DelegationRouter.
@@ -21,16 +31,22 @@ type MailboxWatcher struct {
 	dir          string
 	onMessage    func()                              // called for regular messages + always after routing
 	onDelegation func(result *delegation.RouteResult) // called after delegation routing
+	onDelivered  func(info DeliveredInfo)            // called when a regular mail lands (not delegation-response)
 	stop         chan struct{}
 	once         sync.Once
 }
 
-func NewMailboxWatcher(agentName, dir string, onMessage func(), onDelegation func(*delegation.RouteResult)) *MailboxWatcher {
+func NewMailboxWatcher(agentName, dir string,
+	onMessage func(),
+	onDelegation func(*delegation.RouteResult),
+	onDelivered func(DeliveredInfo),
+) *MailboxWatcher {
 	return &MailboxWatcher{
 		agentName:    agentName,
 		dir:          dir,
 		onMessage:    onMessage,
 		onDelegation: onDelegation,
+		onDelivered:  onDelivered,
 		stop:         make(chan struct{}),
 	}
 }
@@ -118,7 +134,22 @@ func (w *MailboxWatcher) Start() {
 				continue
 			}
 
-			// Regular message — just nudge
+			// Regular message — emit a delivery event for the comms tracker
+			// (when wired) and nudge the agent loop.
+			if w.onDelivered != nil {
+				id := strings.TrimSuffix(name, ".md")
+				cat := categoryFromInboxPath(mailPath)
+				from := ""
+				if f, _, ok := parseMessageFilename(name); ok {
+					from = f
+				}
+				w.onDelivered(DeliveredInfo{
+					ID:       id,
+					From:     from,
+					To:       w.agentName,
+					Category: cat,
+				})
+			}
 			w.onMessage()
 
 		case err, ok := <-watcher.Errors:
@@ -151,4 +182,15 @@ func parseMessageFilename(name string) (string, string, bool) {
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
+}
+
+// categoryFromInboxPath looks at .../mailbox/inbox/<category>/<file> and
+// returns the category segment, falling back to "all" if it can't tell.
+func categoryFromInboxPath(p string) string {
+	parent := filepath.Base(filepath.Dir(p))
+	switch parent {
+	case "important", "priority", "all":
+		return parent
+	}
+	return "all"
 }
