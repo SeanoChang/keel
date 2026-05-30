@@ -57,6 +57,11 @@ func (e Envelope) Validate() error {
 	default:
 		return fmt.Errorf("wire: invalid kind %q", e.Kind)
 	}
+	switch e.Priority {
+	case "", PriorityNormal, PriorityHigh:
+	default:
+		return fmt.Errorf("wire: invalid priority %q", e.Priority)
+	}
 	if e.ID == "" {
 		return fmt.Errorf("wire: envelope requires id")
 	}

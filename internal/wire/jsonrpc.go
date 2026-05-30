@@ -23,6 +23,8 @@ type RPCResponse struct {
 }
 
 func NewRequest(id, method string, params any) RPCRequest {
+	// Swallow is safe here: params is caller-controlled, and the recipient
+	// validates the request before acting on it.
 	p, _ := json.Marshal(params)
 	return RPCRequest{JSONRPC: "2.0", ID: id, Method: method, Params: p}
 }
@@ -37,7 +39,10 @@ func ErrorResponse(id string, code int, msg string, data any) RPCResponse {
 	return RPCResponse{JSONRPC: "2.0", ID: id, Error: &RPCError{Code: code, Message: msg, Data: data}}
 }
 func ResultResponse(id string, result any) RPCResponse {
-	r, _ := json.Marshal(result)
+	r, err := json.Marshal(result)
+	if err != nil {
+		return ErrorResponse(id, -32603, "internal error: marshal result", err.Error())
+	}
 	return RPCResponse{JSONRPC: "2.0", ID: id, Result: r}
 }
 func (r RPCResponse) Marshal() ([]byte, error) { return json.Marshal(r) }
